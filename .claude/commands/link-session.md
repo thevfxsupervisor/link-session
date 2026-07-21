@@ -119,9 +119,34 @@ done
 
 ## Safety checks (run on every invocation)
 
-- Other file not updated in >30 min -> warn "Other session may be idle or closed".
+- Other file not updated in >30 min -> warn "Other session may be idle or closed". **On a Dropbox-synced channel, widen this well past 30 min** (sync-propagation lag makes a peer look idle when its write just has not propagated yet); never hard-conclude a peer is dead from mtime alone on Dropbox.
 - Both `done:true` but neither `stop:true` -> prompt to run `/link-session stop`.
 - Non-empty `message` in any other outbox -> summarise it (missed-message catch-up); if it carries a `to`, note who it is for.
+
+## Hardening: durability rules
+
+**Two layers, don't confuse them.** The disk channel is for LIVE, EPHEMERAL coordination only (outboxes, handoff files). Durable state that must survive and stay identical across machines, shared skills, config, portable knowledge, belongs in **version control** (mount-independent + versioned + is its own backup), NOT on the channel mount, which can drop. Never treat the disk channel as the source of truth for anything you'd be sad to lose.
+
+**Doorbell rule + ordering.** The monitor watches `*.json` mtimes, so a `.md` you drop is invisible until you bump your own outbox json. Anything longer than a line goes in a `.md`; the `message` field is only a doorbell + pointer (it is single-slot and a second write CLOBBERS the first with no history). **Write the file FIRST, then bump your `.json` LAST**, because the json mtime is what wakes peers, so it must change only after the file is fully written, or a peer wakes, reads a half-written file, and caches a stale mtime.
+
+**One-writer-per-file.** Each session writes ONLY its own `<session>.json` and its own author-named `.md` files, never a doc another session owns. On a synced store (e.g. Dropbox), concurrent writes to one file spawn `(conflicted copy)` files and the real file may reflect neither write. Disjoint ownership is not optional.
+
+**Mount-drop guard in every monitor.** A dropped mount makes the poll loop spin forever seeing nothing, with NO error, indistinguishable from a quiet channel. Guard each loop and warn loudly (a printed line fires an event so you actually notice) instead of looping blind:
+
+    # init once before the loop:  missing_warned=0
+    # first lines inside the while loop, after computing $dir and $own:
+    if [ ! -d "$dir" ] || [ ! -f "$dir/$own" ]; then
+      if [ "$missing_warned" = "0" ]; then
+        echo "MONITOR WARNING: channel dir or own outbox not reachable ($dir) - mount may have dropped; retrying"
+        missing_warned=1
+      fi
+      sleep 15; continue
+    fi
+    missing_warned=0
+
+(python monitors: same idea, `if not os.path.isdir(dir) or not os.path.isfile(own): warn once + sleep + continue`.)
+
+**Restart reflex.** A monitor survives a compaction but NOT a full session restart. The FIRST action after any restart is re-invoke `/link-session` to rebuild it, before touching real work. Don't trust "no events" right after a restart to mean "no messages." An agent with its own scheduler (e.g. cron) should run its monitor as a standing cron/daemon job so it survives restarts on its own.
 
 ## Stop protocol
 
