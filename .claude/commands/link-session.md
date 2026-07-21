@@ -130,4 +130,3 @@ done
 3. Once all done -> write `stop:true`; confirm peers do too within 2 poll cycles.
 
 **`/link-session stop`**: write `done:true, stop:true` to own outbox. If a peer has not stopped, tell the user they need to run `/link-session stop` there too.
-</content>
