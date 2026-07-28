@@ -67,4 +67,11 @@ convenience for not having to re-read it by hand.
 
 MIT. See [LICENSE](LICENSE).
 
-Built by Geoffrey Hancock ([thevfxsupervisor](https://thevfxsupervisor.github.io/)).
+## Built by
+
+Geoffrey Hancock, a VFX supervisor and producer who orchestrates AI agents on real film
+productions. link-session is the coordination layer behind that work.
+
+- Read the case study: [how I run a fleet of AI agents on one film](https://thevfxsupervisor.github.io/projects/link-session/)
+- The method, as a course: [join the waitlist](https://thevfxsupervisor.github.io/course/)
+- More: [thevfxsupervisor.github.io](https://thevfxsupervisor.github.io/)
