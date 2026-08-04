@@ -25,14 +25,38 @@ description: Link two or more active Claude Code sessions for short-lived coordi
 - `status` - always-current one-liner; update on meaningful progress.
 - `message` - one-off note; clear (set `""`) after it is acknowledged.
 - `to` - optional target session when the channel has 3+ participants; a directed `message` is meant for that session, others ignore it. Blank = broadcast.
-- `data` - structured payload for peers.
+- `data` - structured payload for peers. Keep it small and machine-readable; it is not a second message field.
 - `done` / `stop` - both must be `true` to close the channel.
 
 The channel can hold MANY sessions, not just two. "The other session" below means "each non-closed peer." Never write to another session's file, only your own.
 
+### Size discipline (this is a context budget, not a style note)
+
+Every field you write is pulled into the context of EVERY peer, on EVERY change. A 3,000-character outbox on a 6-seat channel costs ~15,000 characters of fleet context per bump, repeated for each bump. Measured on a live channel, one seat's outbox had a 2,101-character `message` while the median was under 300.
+
+**Hard caps:**
+
+| Field | Cap | Why |
+|---|---|---|
+| `status` | **120 chars, one line** | It is a dashboard line, not a paragraph |
+| `message` | **280 chars** | It is a DOORBELL and a POINTER, not the payload |
+| `data` | **small, structured** | Keys and short values, not prose |
+
+**Anything longer goes in an author-named `.md` and the `message` points at it.** That is not a suggestion: the `message` field is single-slot and clobbers with no history, so a long message is both expensive AND lossy. Write the file, then reference it by name:
+
+    "message": "Retraction on the folder convention, details in linux-RETRACTION-2026-08-04.md"
+
+A peer that needs the detail reads the file. A peer that does not, does not pay for it.
+
 ## Polling - use Monitor, not a background script
 
-After joining, start a Monitor that watches all `.json` files in the channel dir (except your own) for mtime changes. This delivers real notifications; do not use a hidden background Python process.
+After joining, start a Monitor that watches all `.json` files in the channel dir (except your own) for changes. This delivers real notifications; do not use a hidden background Python process.
+
+**Three rules that keep a monitor cheap.** All three were learned by paying for their absence:
+
+1. **Check for a duplicate BEFORE launching.** `pgrep -f monitor_<own>` (or the platform equivalent) and skip if one is already up. A monitor survives a context compaction but not a session restart, so re-invoking this skill after a compaction is the normal way to end up with two. Two monitors deliver every event twice, forever, and the symptom looks exactly like a healthy channel. One live channel ran two for ten days.
+2. **Baseline on first sight, do not replay.** On startup, record every peer's current state WITHOUT emitting it. Otherwise every monitor start dumps the entire channel's accumulated messages into your context, which on a busy channel is thousands of characters of things you already knew.
+3. **Fire on CONTENT change, not mtime.** Hash `(status, message, data)`. A file rewritten with identical content, which happens whenever a seat re-saves its outbox, must not wake anyone.
 
 **Write the poller to a file and run it with `-File`. Do NOT pass the loop inline via `powershell -Command "..."`** - the nested quotes and any non-ASCII get mangled when the command passes through the agent's shell, and the Monitor exits 1 (observed repeatedly on Windows). Keep the script ASCII-only (no em-dashes) so the console encoding cannot choke.
 
@@ -44,15 +68,27 @@ Write `CHANNEL_DIR\monitor_OWN.ps1` once (substitute `CHANNEL_DIR` and `OWN_FILE
 $dir = 'CHANNEL_DIR'
 $own = 'OWN_FILE'
 $h = @{}
+$first = $true          # baseline pass: record state WITHOUT emitting it
+# Compact emit: status truncated, message reported as a POINTER not a payload.
+function Emit($d){
+  $s = "$($d.status)"; if($s.Length -gt 120){ $s = $s.Substring(0,120) + '...' }
+  $m = "$($d.message)"
+  $tag = if($m.Length -gt 0){ "  [msg $($m.Length)c - read the file if relevant]" } else { '' }
+  "$($d.session): $s$tag"
+}
+# Content hash, so an identical re-save does not wake anyone.
+function Sig($d){ "$($d.status)|$($d.message)|$($d.data | ConvertTo-Json -Compress -Depth 5)" }
 while ($true) {
   try { $m = Get-Content "$dir\$own" -Raw | ConvertFrom-Json; if ($m.stop) { Write-Host 'own stop flag set - exiting monitor'; break } } catch {}
   Get-ChildItem $dir -Filter *.json | Where-Object { $_.Name -ne $own } | ForEach-Object {
-    $mt = $_.LastWriteTime
-    if ($h[$_.Name] -ne $mt) {
-      $h[$_.Name] = $mt
-      try { $d = Get-Content $_.FullName -Raw | ConvertFrom-Json; if (-not $d.stop) { Write-Host "$($d.session): $($d.status) | $($d.message)" } } catch {}
+    try { $d = Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { return }
+    $sig = Sig $d
+    if ($h[$_.Name] -ne $sig) {
+      $h[$_.Name] = $sig
+      if (-not $first -and -not $d.stop) { Write-Host (Emit $d) }
     }
   }
+  $first = $false
   Start-Sleep 15
 }
 ```
@@ -70,13 +106,25 @@ powershell -ExecutionPolicy Bypass -File "CHANNEL_DIR\monitor_OWN.ps1"
 **Adaptive backoff**: polls 15s, backs off toward 300s when idle, snaps back to 15s on any change. Good for multi-hour coordination.
 
 ```powershell
-$dir='CHANNEL_DIR'; $own='OWN_FILE'; $h=@{}; $iv=15; $idle=0
+$dir='CHANNEL_DIR'; $own='OWN_FILE'; $h=@{}; $iv=15; $idle=0; $first=$true
+# Compact emit: status truncated, message reported as a POINTER not a payload.
+function Emit($d){
+  $s = "$($d.status)"; if($s.Length -gt 120){ $s = $s.Substring(0,120) + '...' }
+  $m = "$($d.message)"
+  $tag = if($m.Length -gt 0){ "  [msg $($m.Length)c - read the file if relevant]" } else { '' }
+  "$($d.session): $s$tag"
+}
+# Content hash, so an identical re-save does not wake anyone.
+function Sig($d){ "$($d.status)|$($d.message)|$($d.data | ConvertTo-Json -Compress -Depth 5)" }
 while ($true) {
   try { if ((Get-Content "$dir\$own" -Raw | ConvertFrom-Json).stop) { break } } catch {}
   $changed=$false
   Get-ChildItem $dir -Filter *.json | Where-Object { $_.Name -ne $own } | ForEach-Object {
-    if ($h[$_.Name] -ne $_.LastWriteTime) { $h[$_.Name]=$_.LastWriteTime; $changed=$true
-      try { $d=Get-Content $_.FullName -Raw | ConvertFrom-Json; if (-not $d.stop) { Write-Host "$($d.session): $($d.status) | $($d.message)" } } catch {} } }
+    try { $d=Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { return }
+    $sig = Sig $d
+    if ($h[$_.Name] -ne $sig) { $h[$_.Name]=$sig; $changed=$true
+      if (-not $first -and -not $d.stop) { Write-Host (Emit $d) } } }
+  $first=$false
   if ($changed) { $iv=15; $idle=0 } else { $idle++; if ($idle -ge 4 -and $iv -lt 300) { $iv=[Math]::Min(300,$iv*2) } }
   Start-Sleep $iv
 }
@@ -86,6 +134,15 @@ while ($true) {
 
 ```powershell
 $dir='CHANNEL_DIR'; $own='OWN_FILE'
+# Compact emit: status truncated, message reported as a POINTER not a payload.
+function Emit($d){
+  $s = "$($d.status)"; if($s.Length -gt 120){ $s = $s.Substring(0,120) + '...' }
+  $m = "$($d.message)"
+  $tag = if($m.Length -gt 0){ "  [msg $($m.Length)c - read the file if relevant]" } else { '' }
+  "$($d.session): $s$tag"
+}
+# Content hash, so an identical re-save does not wake anyone.
+function Sig($d){ "$($d.status)|$($d.message)|$($d.data | ConvertTo-Json -Compress -Depth 5)" }
 $fsw=New-Object IO.FileSystemWatcher $dir,'*.json'
 $fsw.NotifyFilter=[IO.NotifyFilters]'LastWrite,FileName'
 while ($true) {
@@ -93,7 +150,7 @@ while ($true) {
   $r=$fsw.WaitForChanged([IO.WatcherChangeTypes]'Changed,Created', 60000)
   if ($r.TimedOut -or $r.Name -eq $own) { continue }
   Start-Sleep -Milliseconds 200
-  try { $d=Get-Content "$dir\$($r.Name)" -Raw | ConvertFrom-Json; if (-not $d.stop) { Write-Host "$($d.session): $($d.status) | $($d.message)" } } catch {}
+  try { $d=Get-Content "$dir\$($r.Name)" -Raw | ConvertFrom-Json; if (-not $d.stop) { Write-Host (Emit $d) } } catch {}
 }
 ```
 (`Register-ObjectEvent -Action` can also watch Deleted/Renamed, but its handler output does not reach the Monitor's stdout, so `WaitForChanged` is preferred here.)
@@ -102,17 +159,19 @@ while ($true) {
 
 ```bash
 #!/usr/bin/env bash
-dir='CHANNEL_DIR'; own='OWN_FILE'; declare -A seen
+dir='CHANNEL_DIR'; own='OWN_FILE'; declare -A seen; first=1
 while true; do
   [ "$(jq -r '.stop' "$dir/$own" 2>/dev/null)" = "true" ] && { echo 'own stop - exiting'; break; }
   for f in "$dir"/*.json; do
     b=$(basename "$f"); [ "$b" = "$own" ] && continue
-    mt=$(stat -c %Y "$f" 2>/dev/null)
-    if [ "${seen[$b]}" != "$mt" ]; then
-      seen[$b]="$mt"
-      jq -e '.stop' "$f" >/dev/null 2>&1 || jq -r '"\(.session): \(.status) | \(.message)"' "$f" 2>/dev/null
+    sig=$(jq -Sc '{s:.status,m:.message,d:.data}' "$f" 2>/dev/null | md5sum | cut -d' ' -f1)
+    if [ "${seen[$b]}" != "$sig" ]; then
+      seen[$b]="$sig"
+      [ "$first" = "1" ] && continue    # baseline: record, do not replay history
+      jq -e '.stop' "$f" >/dev/null 2>&1 || jq -r '"\(.session): \(.status[0:120])\(if (.message|length)>0 then "  [msg \(.message|length)c - read the file if relevant]" else "" end)"' "$f" 2>/dev/null
     fi
   done
+  first=0
   sleep 15
 done
 ```
