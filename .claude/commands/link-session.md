@@ -4,7 +4,7 @@ description: Link two or more active Claude Code sessions for short-lived coordi
 
 ## How it works
 
-- **Session name = your ROLE in the coordination, not just the CWD basename.** Default to the CWD basename (e.g. `comp-compare` -> `compare`), BUT if this box already has an outbox in the channel under a role name (e.g. `main`, `box5080`), re-adopt that identity instead of spawning a new name. One box can hold several role-identities (e.g. `main` for a breakdown job + `box5080` for a GPU job); pick the one that fits the task, and the user can also name it explicitly.
+- **Session name = your ROLE in the coordination, not just the CWD basename.** Default to the CWD basename (e.g. `comp-compare` -> `compare`), BUT if this box already has an outbox in the channel under a role name (e.g. `main`, `gpu-box`), re-adopt that identity instead of spawning a new name. One box can hold several role-identities (e.g. `main` for a build job + `gpu-box` for a render job); pick the one that fits the task, and the user can also name it explicitly.
 - **Channel dir**: search CWD then up 3 parent dirs for `.session_comms/`; if not found, create at nearest shared root (dir with `CLAUDE.md` or containing both session dirs).
 - Re-invoke any time you return to linked work, after a compaction, or after a session restart. It catches up on missed messages and restarts the monitor. The channel files survive all three; a live monitor process survives a compaction but NOT a full restart, so re-invoke to rebuild it.
 
@@ -44,9 +44,13 @@ Every field you write is pulled into the context of EVERY peer, on EVERY change.
 
 **Anything longer goes in an author-named `.md` and the `message` points at it.** That is not a suggestion: the `message` field is single-slot and clobbers with no history, so a long message is both expensive AND lossy. Write the file, then reference it by name:
 
-    "message": "Retraction on the folder convention, details in linux-RETRACTION-2026-08-04.md"
+    "message": "Retraction on the naming convention, details in renders-RETRACTION-2026-05-14.md"
 
 A peer that needs the detail reads the file. A peer that does not, does not pay for it.
+
+**Keep the payload STABLE: no counters, no timestamps, no "last seen" values inside `status`, `message` or `data`.** Peers detect change by hashing those three fields (see the monitor rules below), so anything volatile turns your outbox into a broadcast. A heartbeat is the easiest place in a system to build one by accident: one seat put a live event counter in its `data` and woke the whole channel, hourly, to report that nothing had changed. Let the file's mtime carry liveness, since anyone who genuinely cares can read it without being woken, and keep running counts in a log, which is where counts belong.
+
+**Silence is not honesty either.** A passive watcher that refuses to announce itself is indistinguishable from a dead participant, and peers will spend real attention on the false alarm. If something is watching the channel but no agent is acting behind it, say both plainly in one line: **watcher alive, agent not running.** "Nobody is listening" and "something is listening but nobody is acting" are very different things to a sender.
 
 ## Polling - use Monitor, not a background script
 
@@ -54,7 +58,13 @@ After joining, start a Monitor that watches all `.json` files in the channel dir
 
 **Three rules that keep a monitor cheap.** All three were learned by paying for their absence:
 
-1. **Check for a duplicate BEFORE launching.** `pgrep -f monitor_<own>` (or the platform equivalent) and skip if one is already up. A monitor survives a context compaction but not a session restart, so re-invoking this skill after a compaction is the normal way to end up with two. Two monitors deliver every event twice, forever, and the symptom looks exactly like a healthy channel. One live channel ran two for ten days.
+1. **Check for a duplicate BEFORE launching, and count it correctly.** A monitor survives a context compaction but not a session restart, so re-invoking this skill after a compaction is the normal way to end up with two. Two monitors deliver every event twice, forever, and the symptom looks exactly like a healthy channel. One live channel ran two for ten days. Ask "how many monitors am I running", never "is my monitor running".
+
+   **Do not count with a naive `pgrep -f monitor_<own>`.** It also matches the shell WRAPPER that launched the script, so a perfectly healthy single monitor reads as 2, and anyone following that advice literally will kill their only monitor while chasing a phantom. Count interpreter processes only:
+
+       ps -eo pid,cmd --no-headers | awk '$2=="python3" && /monitor_<own>\.py/' | wc -l
+
+   Substitute the interpreter you actually launch it with (`bash`, `pwsh`). On macOS `pgrep -fc` silently prints nothing rather than erroring, so use `ps ax | grep` there. Check parent/child with `ps -o pid,ppid` before killing anything.
 2. **Baseline on first sight, do not replay.** On startup, record every peer's current state WITHOUT emitting it. Otherwise every monitor start dumps the entire channel's accumulated messages into your context, which on a busy channel is thousands of characters of things you already knew.
 3. **Fire on CONTENT change, not mtime.** Hash `(status, message, data)`. A file rewritten with identical content, which happens whenever a seat re-saves its outbox, must not wake anyone.
 
