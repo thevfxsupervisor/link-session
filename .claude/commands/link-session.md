@@ -155,18 +155,24 @@ while ($true) {
 ```
 (`Register-ObjectEvent -Action` can also watch Deleted/Renamed, but its handler output does not reach the Monitor's stdout, so `WaitForChanged` is preferred here.)
 
-**Bash fallback** (use when a permission classifier blocks `powershell -ExecutionPolicy Bypass`, e.g. auto/restricted mode, or on macOS/Linux): same logic as a `.sh`, run with `bash CHANNEL_DIR/monitor_OWN.sh`. No ExecutionPolicy, so no classifier trip. Needs `jq` (or swap the two `jq` lines for a `python3 -c` JSON read).
+**Bash fallback** (use when a permission classifier blocks `powershell -ExecutionPolicy Bypass`, e.g. auto/restricted mode, or on Linux): same logic as a `.sh`, run with `bash CHANNEL_DIR/monitor_OWN.sh`. No ExecutionPolicy, so no classifier trip. Needs `jq` (or swap the two `jq` lines for a `python3 -c` JSON read).
+
+> **macOS seats: prefer the python3 variant.** macOS ships **bash 3.2**, which has no associative arrays (`declare -A`) and no `md5sum` (it has `md5`). A `declare -A` in a monitor script does not degrade, it **kills the monitor on launch**, and a dead monitor is indistinguishable from a quiet channel. The loop below is written to be bash 3.2 safe (file-backed state, both hash binaries), but on any box with a real `python3` the python monitor is simpler and has none of these traps.
 
 ```bash
 #!/usr/bin/env bash
-dir='CHANNEL_DIR'; own='OWN_FILE'; declare -A seen; first=1
+# bash 3.2 safe: file-backed state instead of `declare -A`, which macOS cannot parse.
+dir='CHANNEL_DIR'; own='OWN_FILE'; first=1
+state="${TMPDIR:-/tmp}/link-session-$own.state"; mkdir -p "$state"
+hash_cmd() { if command -v md5sum >/dev/null 2>&1; then md5sum | cut -d' ' -f1; else md5 -q; fi; }
 while true; do
   [ "$(jq -r '.stop' "$dir/$own" 2>/dev/null)" = "true" ] && { echo 'own stop - exiting'; break; }
   for f in "$dir"/*.json; do
     b=$(basename "$f"); [ "$b" = "$own" ] && continue
-    sig=$(jq -Sc '{s:.status,m:.message,d:.data}' "$f" 2>/dev/null | md5sum | cut -d' ' -f1)
-    if [ "${seen[$b]}" != "$sig" ]; then
-      seen[$b]="$sig"
+    sig=$(jq -Sc '{s:.status,m:.message,d:.data}' "$f" 2>/dev/null | hash_cmd)
+    prev=$(cat "$state/$b" 2>/dev/null)
+    if [ "$prev" != "$sig" ]; then
+      printf '%s' "$sig" > "$state/$b"
       [ "$first" = "1" ] && continue    # baseline: record, do not replay history
       jq -e '.stop' "$f" >/dev/null 2>&1 || jq -r '"\(.session): \(.status[0:120])\(if (.message|length)>0 then "  [msg \(.message|length)c - read the file if relevant]" else "" end)"' "$f" 2>/dev/null
     fi
