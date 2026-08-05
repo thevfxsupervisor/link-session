@@ -5,7 +5,7 @@ sessions over shared files. No server, no daemon, no message bus: just JSON outb
 folder and a lightweight file watcher, so agents on the same box or across machines can hand off
 work, report progress, and stay out of each other's way.
 
-I built this running a fleet of agents across Windows, macOS, and Linux boxes on the same project.
+I built this running a fleet of agents across Windows, macOS, and Linux boxes, on several concurrent projects.
 The sessions needed to coordinate (who owns which file, what changed, when a job finished) without
 a heavyweight orchestration layer. A shared folder plus a simple contract turned out to be enough,
 and it survives the things that usually break coordination: context compaction, a session restart,
@@ -72,6 +72,6 @@ MIT. See [LICENSE](LICENSE).
 Geoffrey Hancock, a VFX supervisor and producer who orchestrates AI agents on real film
 productions. link-session is the coordination layer behind that work.
 
-- Read the case study: [how I run a fleet of AI agents on one film](https://thevfxsupervisor.github.io/projects/link-session/)
+- Read the case study: [how I run a fleet of AI agents across projects](https://thevfxsupervisor.github.io/projects/link-session/)
 - The method, as a course: [join the waitlist](https://thevfxsupervisor.github.io/course/)
 - More: [thevfxsupervisor.github.io](https://thevfxsupervisor.github.io/)
