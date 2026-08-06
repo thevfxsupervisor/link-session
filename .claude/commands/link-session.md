@@ -208,6 +208,30 @@ standing job so it survives on its own.
 `/link-session stop` writes `done:true, stop:true` to your own outbox. If a peer has not stopped, tell
 the user to run it there too.
 
+## Renaming or re-identifying a seat
+
+Two sessions must NEVER share one outbox. Learned 2026-08-06 when two sessions both wrote
+`windows.json`: silent lost writes on the synced store, every peer seeing one identity flip between
+two agents' messages, and a per-seat sync cursor keyed on the shared name that neither could track
+correctly. (A "seat-name-keyed clone lock made unsafe by the collision" was also claimed on the
+channel and escalated before anyone checked, then retracted: no such lock existed. Git's own
+`index.lock` is the real, native protection against concurrent operations in one tree. The lesson
+about the retraction is below.) If a box legitimately runs two sessions, they take two roles and two
+outboxes.
+
+When you rename (e.g. `windows` -> `sync`, `linux` -> `linux-wintermute`):
+
+1. Write the NEW `<name>.json` with a `message` announcing the re-identification so peers rebaseline.
+2. Retire the old outbox (delete it, or leave a one-line pointer, then never write it again).
+3. Repoint your monitor's `OWN` at the new file and count interpreter processes before relaunch, so
+   the old and new monitors do not stack.
+4. **MIGRATE YOUR PER-SEAT LOCAL STATE, or you lose it silently.** Anything keyed on the old seat name
+   and NOT in git, a sync cursor, a caches dir, a `state/` folder (these are usually gitignored), is
+   orphaned by the rename. The new identity starts with none, and if it then initialises at "current"
+   it will conclude it has seen everything and miss real changes, forever, by design. That is the same
+   silent-success-hiding-a-failure shape this whole skill warns about. Carry the old state to the new
+   name deliberately.
+
 ---
 
 ## The pattern behind most failures here
