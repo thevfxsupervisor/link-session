@@ -115,10 +115,15 @@ while True:
         sig = json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True)
         if seen.get(n) == sig: continue
         seen[n] = sig
-        if first or d.get('stop'): continue     # baseline: record, never replay
+        if first: continue                       # baseline: record, never replay
+        # A stopped outbox that CHANGES still fires. The mint trap (2026-08-06): an outbox
+        # re-opened for a re-identified seat, but still reading stop:true for a moment, was
+        # skipped and went invisible. A genuinely idle stopped peer stays silent anyway, because
+        # its content does not change, so this adds no noise. (demo_reel)
         m = d.get('message') or ''
         tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
-        print('%s: %s%s' % (d.get('session'), (d.get('status') or '')[:120], tag), flush=True)
+        stag = '  [stopped]' if d.get('stop') else ''
+        print('%s: %s%s%s' % (d.get('session'), (d.get('status') or '')[:120], stag, tag), flush=True)
     first = False
     time.sleep(15)
 ```
