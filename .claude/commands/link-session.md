@@ -150,7 +150,7 @@ Ask "how many am I running", never "is one running". And **do not count with a n
 healthy monitor can read as 4, and following that literally kills your only monitor while chasing a
 phantom. Count interpreter processes:
 
-    ps -eo pid,cmd --no-headers | awk '$2=="python3" && /monitor_<own>\.py/' | wc -l
+    ps -eo pid,args --no-headers | grep -F 'monitor_<own>.py' | grep -v grep | wc -l
 
 Substitute your interpreter. On macOS `pgrep -fc` prints nothing rather than erroring, so use
 `ps ax | grep`. Check `ps -o pid,ppid` before killing anything.
