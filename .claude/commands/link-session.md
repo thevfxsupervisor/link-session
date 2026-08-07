@@ -42,7 +42,7 @@ watcher surfaces the others' changes. No server, no daemon, no message bus.
 | `updated` | From the shell clock (`date` / `Get-Date`). You cannot read the wall clock unaided |
 | `status` | Always-current one-liner. **Cap 120 chars** |
 | `message` | One-off note. **Cap 280 chars.** Clear it once acknowledged |
-| `to` | Optional target session; blank means broadcast |
+| `to` | Who the message is FOR: a name, or a list of names; blank = broadcast. A routing hint, not a delivery filter, see below |
 | `data` | Small structured payload. Keys and short values, not prose |
 | `done`/`stop` | Both true closes the channel |
 
@@ -75,6 +75,22 @@ changed leave the status exactly as it is.* Checking and finding nothing is not 
 a dead participant. If something watches but no agent acts behind it, say both in one line: **watcher
 alive, agent not running.** "Nobody is listening" and "something is listening but nobody is acting"
 are very different things to a sender.
+
+### Addressing: `to` is a routing hint, not a delivery guarantee
+
+`to` names who a message is FOR; it does not control who SEES it. Every peer still reads every
+outbox, so `to` earns its keep only when a receiver chooses to act on it, and that cuts both ways.
+
+**Broadcast anything the fleet needs; address a single seat only for genuinely point-to-point work.**
+A correction, a retraction, a stop, a "the shared sheet moved" is fleet news: leave `to` blank.
+Address one seat (`"to":"renders"`) only when the line is a handoff no one else must act on. When
+several must act, make `to` a LIST (`"to":["renders","comp"]`); a bare string means exactly one.
+
+**The trap: fleet news addressed to one seat, behind a receiver that hides what is not for it.** The
+moment any peer filters on `to` (below), a fleet-critical line sent with `"to":"renders"` goes
+invisible to everyone except renders. If it mattered to the fleet, it needed a blank `to`. When in
+doubt, broadcast: an unwanted line costs one glance, but a hidden correction costs the whole fleet
+acting on a premise you already took back.
 
 ## The monitor
 
@@ -143,6 +159,39 @@ to 300s when idle, snapping back on change) is tidiness, not saving: only emitte
 2. **Fire on CONTENT, not mtime.** An identical re-save must wake nobody.
 3. **Identify peers by shape.** A real outbox has `session` and `status`. Everything else in the
    folder is somebody's working file.
+
+### Optional: suppress point-to-point chatter addressed elsewhere
+
+On a busy channel a seat may want only what is FOR it or for the whole fleet, not every handoff
+between two other seats. That is a receiver choice, and a dangerous one to get wrong: hide too much
+and a correction you needed looks like it never came. Three guards make it safe. Replace the emit
+block in the loop with:
+
+```python
+        to = d.get('to') or ''
+        recips = to if isinstance(to, list) else ([to] if to else [])
+        m = d.get('message') or ''
+        loud = any(k in ((d.get('status') or '') + ' ' + m).upper()
+                   for k in ('CORRECTION', 'RETRACTION', 'RETRACT', 'SECURITY', 'HAZARD'))
+        # Suppress ONLY a point-to-point message addressed to someone else.
+        # A broadcast (empty recips) and any loud marker always fire.
+        if recips and MYSEAT not in recips and not loud:
+            continue
+        tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
+        print('%s: %s%s' % (d.get('session'), (d.get('status') or '')[:120], tag), flush=True)
+```
+
+- **Membership, never equality.** `to == MYSEAT` drops a message sent to `["renders","comp"]` that
+  names you. Test `MYSEAT in recips`.
+- **Loud markers bypass the filter.** A CORRECTION, RETRACTION, SECURITY or HAZARD fires even when
+  addressed elsewhere. Those are the exact messages a filter must never eat, and it is why the sender
+  rule above says broadcast anything the fleet needs.
+- **A blank `to` is a broadcast and always fires.** Empty `recips` never suppresses.
+
+`MYSEAT` is your ROLE name, the string in your own `session` field, which is not always your
+filename. Set it explicitly rather than deriving it from `OWN`, or a seat whose role and file differ
+silently filters out everything meant for it. Add this filter only when the channel is noisy enough
+to need it. A small channel is better read whole.
 
 ### Count monitors correctly BEFORE launching
 
