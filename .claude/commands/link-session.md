@@ -120,6 +120,7 @@ while True:
     try:
         if json.load(open(os.path.join(DIR, OWN))).get('stop'): break
     except Exception: pass
+    fyi = []                                       # status-only changes this cycle, coalesced
     for n in sorted(os.listdir(DIR)):
         if not n.endswith('.json') or n == OWN: continue
         try: d = json.load(open(os.path.join(DIR, n)))
@@ -132,14 +133,27 @@ while True:
         if seen.get(n) == sig: continue
         seen[n] = sig
         if first: continue                       # baseline: record, never replay
-        # A stopped outbox that CHANGES still fires. The mint trap (2026-08-06): an outbox
-        # re-opened for a re-identified seat, but still reading stop:true for a moment, was
-        # skipped and went invisible. A genuinely idle stopped peer stays silent anyway, because
-        # its content does not change, so this adds no noise. (demo_reel)
-        m = d.get('message') or ''
-        tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
+        # A stopped outbox that CHANGES still fires. A re-identification trap seen in practice:
+        # an outbox re-opened for a re-identified session, but still reading stop:true for a
+        # moment, was skipped and went invisible. A genuinely idle stopped peer stays silent
+        # anyway, because its content does not change, so this adds no noise.
+        m = (d.get('message') or '').strip()
+        st = (d.get('status') or '')[:120]
         stag = '  [stopped]' if d.get('stop') else ''
-        print('%s: %s%s%s' % (d.get('session'), (d.get('status') or '')[:120], stag, tag), flush=True)
+        loud = any(k in (st + ' ' + m).upper()
+                   for k in ('CORRECTION', 'RETRACTION', 'SECURITY', 'HAZARD'))
+        if m or loud:
+            # A message or a loud marker WANTS a look: surface it alone, immediately.
+            tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
+            print('%s: %s%s%s' % (d.get('session'), st, stag, tag), flush=True)
+        else:
+            # A status-only change is PROGRESS, not a request. Collect it, and emit the
+            # whole cycle as ONE [fyi] line, so a burst of peers moving is one wake, not
+            # one each. Nothing on an [fyi] line needs a reply.
+            fyi.append('%s: %s%s' % (d.get('session'), st, stag))
+    if fyi:
+        print(('[fyi] ' + fyi[0]) if len(fyi) == 1
+              else ('[fyi] %d peers moved | %s' % (len(fyi), '  ||  '.join(fyi))), flush=True)
     first = False
     time.sleep(15)
 ```
@@ -152,13 +166,28 @@ restart kills it), else `persistent=false, timeout_ms=3600000`.
 `FileSystemWatcher.WaitForChanged` variant avoids polling entirely. **Adaptive backoff** (15s easing
 to 300s when idle, snapping back on change) is tidiness, not saving: only emitted events bill.
 
-### Three rules the loop above encodes
+### Four rules the loop above encodes
 
 1. **Baseline on first sight, never replay.** Record every peer's state without emitting it, or every
    monitor start dumps the channel's whole history into the session that just began.
 2. **Fire on CONTENT, not mtime.** An identical re-save must wake nobody.
 3. **Identify peers by shape.** A real outbox has `session` and `status`. Everything else in the
    folder is somebody's working file.
+4. **Messages and loud markers surface alone; status-only changes coalesce into one `[fyi]` line.** A
+   peer just making progress is not asking you anything, so a burst of status changes becomes one
+   informational line, not one wake each, and an `[fyi]` line needs no reply. The cost of a channel is
+   not the events, it is the agent turns they trigger; act only on messages, loud markers, or a status
+   you were explicitly waiting on.
+
+### A big change is one writer's job, batched
+
+When one session is making a large, multi-step change (a sweep, a refactor, a cleanup), the expensive
+failure is N sessions all working it at once: every write wakes every peer, so the cross-talk grows
+with the square of the participants. Prefer ONE owner doing the whole batch, parallelising with
+sub-tasks that do NOT touch the channel (a subagent) rather than with more sessions that broadcast
+everything they do. The owner coordinates TWICE: once to claim it ("I own X, hold off") and once when
+done (a single summary), never once per step. Peers defer and do not narrate the churn. A big change
+that fans out to the whole channel costs far more in attention than the change itself.
 
 ### Optional: suppress point-to-point chatter addressed elsewhere
 
@@ -273,7 +302,7 @@ channel and escalated before anyone checked, then retracted: no such lock existe
 about the retraction is below.) If a box legitimately runs two sessions, they take two roles and two
 outboxes.
 
-When you rename (e.g. `windows` -> `sync`, `linux` -> `linux-wintermute`):
+When you rename (e.g. `gpu` -> `gpu-box`, `renders` -> `comp-renders`):
 
 1. Write the NEW `<name>.json` with a `message` announcing the re-identification so peers rebaseline.
 2. Retire the old outbox (delete it, or leave a one-line pointer, then never write it again).
