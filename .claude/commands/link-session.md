@@ -103,11 +103,17 @@ Keep it ASCII-only so console encoding cannot choke it.
 permission classifier may block as a "Security Weaken". A `declare -A` in a bash monitor does not
 degrade, it kills the monitor at launch, and a dead monitor looks exactly like a quiet channel.
 
-Write `CHANNEL_DIR/monitor_<own>.py` once, substituting `DIR` and `OWN`:
+Write `CHANNEL_DIR/monitor_<own>.py` once, substituting `DIR`, `OWN`, and `ME` (your session/role
+name, so the `to:` match works when your outbox filename differs from your role):
 
 ```python
 import json, os, time
-DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'          # OWN must be the file YOU write
+DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
+# LSMON2: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# broadcast) or a LOUD marker. A peer's STATUS change no longer wakes anyone - read a peer's
+# status on demand instead. Targeted comms: you are woken by what involves you, not by other
+# seats' progress. Want ambient awareness anyway? Add the optional status digest below.
+LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one. Say so, once.
@@ -120,7 +126,6 @@ while True:
     try:
         if json.load(open(os.path.join(DIR, OWN))).get('stop'): break
     except Exception: pass
-    fyi = []                                       # status-only changes this cycle, coalesced
     for n in sorted(os.listdir(DIR)):
         if not n.endswith('.json') or n == OWN: continue
         try: d = json.load(open(os.path.join(DIR, n)))
@@ -131,29 +136,25 @@ while True:
         if not isinstance(d, dict) or 'session' not in d or 'status' not in d: continue
         sig = json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True)
         if seen.get(n) == sig: continue
-        seen[n] = sig
-        if first: continue                       # baseline: record, never replay
-        # A stopped outbox that CHANGES still fires. A re-identification trap seen in practice:
-        # an outbox re-opened for a re-identified session, but still reading stop:true for a
-        # moment, was skipped and went invisible. A genuinely idle stopped peer stays silent
-        # anyway, because its content does not change, so this adds no noise.
+        seen[n] = sig                             # record EVERY change, so nothing re-fires
+        if first: continue                        # baseline: record, never replay
         m = (d.get('message') or '').strip()
-        st = (d.get('status') or '')[:120]
+        st = (d.get('status') or '')
+        loud = any(k in (st + ' ' + m).upper() for k in LOUD)
+        # STATUS IS PULL. A change with no message and no loud marker is PROGRESS, not a
+        # request: it is recorded above but wakes NOBODY. This is what makes the channel
+        # targeted - a peer grinding on unrelated work no longer costs you a turn.
+        if not m and not loud:
+            continue
+        # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
+        # or blank = broadcast); a loud marker always delivers. to: may be a name or a list.
+        to = d.get('to') or ''
+        recips = to if isinstance(to, list) else ([to] if to else [])
+        if recips and ME not in recips and not loud:
+            continue
+        tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
         stag = '  [stopped]' if d.get('stop') else ''
-        loud = any(k in (st + ' ' + m).upper()
-                   for k in ('CORRECTION', 'RETRACTION', 'SECURITY', 'HAZARD'))
-        if m or loud:
-            # A message or a loud marker WANTS a look: surface it alone, immediately.
-            tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
-            print('%s: %s%s%s' % (d.get('session'), st, stag, tag), flush=True)
-        else:
-            # A status-only change is PROGRESS, not a request. Collect it, and emit the
-            # whole cycle as ONE [fyi] line, so a burst of peers moving is one wake, not
-            # one each. Nothing on an [fyi] line needs a reply.
-            fyi.append('%s: %s%s' % (d.get('session'), st, stag))
-    if fyi:
-        print(('[fyi] ' + fyi[0]) if len(fyi) == 1
-              else ('[fyi] %d peers moved | %s' % (len(fyi), '  ||  '.join(fyi))), flush=True)
+        print('%s: %s%s%s' % (d.get('session'), st[:120], stag, tag), flush=True)
     first = False
     time.sleep(15)
 ```
@@ -173,11 +174,13 @@ to 300s when idle, snapping back on change) is tidiness, not saving: only emitte
 2. **Fire on CONTENT, not mtime.** An identical re-save must wake nobody.
 3. **Identify peers by shape.** A real outbox has `session` and `status`. Everything else in the
    folder is somebody's working file.
-4. **Messages and loud markers surface alone; status-only changes coalesce into one `[fyi]` line.** A
-   peer just making progress is not asking you anything, so a burst of status changes becomes one
-   informational line, not one wake each, and an `[fyi]` line needs no reply. The cost of a channel is
-   not the events, it is the agent turns they trigger; act only on messages, loud markers, or a status
-   you were explicitly waiting on.
+4. **Status is PULL; only messages, broadcasts, and loud markers PUSH.** The cost of a channel is not
+   its events, it is the agent turns they trigger, so a peer's status change (progress on its own work)
+   wakes nobody, it is recorded and read on demand. You are woken only by a message addressed to you, a
+   broadcast, or a loud marker, the things that actually involve you. **So if you want a peer to KNOW
+   something now, send a message; do not flip your status and hope.** Meaningful transitions ("handoff
+   ready", "your turn") are messages; routine progress is status. This is what keeps an N-seat channel
+   from waking every seat for work that involves none of them.
 
 ### A big change is one writer's job, batched
 
@@ -189,38 +192,38 @@ everything they do. The owner coordinates TWICE: once to claim it ("I own X, hol
 done (a single summary), never once per step. Peers defer and do not narrate the churn. A big change
 that fans out to the whole channel costs far more in attention than the change itself.
 
-### Optional: suppress point-to-point chatter addressed elsewhere
+### The `to:` filter is built in: three guards that keep it safe
 
-On a busy channel a seat may want only what is FOR it or for the whole fleet, not every handoff
-between two other seats. That is a receiver choice, and a dangerous one to get wrong: hide too much
-and a correction you needed looks like it never came. Three guards make it safe. Replace the emit
-block in the loop with:
+The default loop only pushes messages and loud markers, and it already filters them by `to:`. Three
+guards make that safe, and they are why the loop reads the way it does. Do not weaken them:
 
-```python
-        to = d.get('to') or ''
-        recips = to if isinstance(to, list) else ([to] if to else [])
-        m = d.get('message') or ''
-        loud = any(k in ((d.get('status') or '') + ' ' + m).upper()
-                   for k in ('CORRECTION', 'RETRACTION', 'RETRACT', 'SECURITY', 'HAZARD'))
-        # Suppress ONLY a point-to-point message addressed to someone else.
-        # A broadcast (empty recips) and any loud marker always fire.
-        if recips and MYSEAT not in recips and not loud:
-            continue
-        tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
-        print('%s: %s%s' % (d.get('session'), (d.get('status') or '')[:120], tag), flush=True)
-```
-
-- **Membership, never equality.** `to == MYSEAT` drops a message sent to `["renders","comp"]` that
-  names you. Test `MYSEAT in recips`.
-- **Loud markers bypass the filter.** A CORRECTION, RETRACTION, SECURITY or HAZARD fires even when
-  addressed elsewhere. Those are the exact messages a filter must never eat, and it is why the sender
-  rule above says broadcast anything the fleet needs.
+- **Membership, never equality.** `to == ME` drops a message sent to `["renders","comp"]` that names
+  you. The loop tests `ME in recips`.
+- **Loud markers bypass the filter.** A CORRECTION / RETRACTION / SECURITY / HAZARD fires even when
+  addressed elsewhere, the exact messages a filter must never eat.
 - **A blank `to` is a broadcast and always fires.** Empty `recips` never suppresses.
 
-`MYSEAT` is your ROLE name, the string in your own `session` field, which is not always your
-filename. Set it explicitly rather than deriving it from `OWN`, or a seat whose role and file differ
-silently filters out everything meant for it. Add this filter only when the channel is noisy enough
-to need it. A small channel is better read whole.
+`ME` is your ROLE name (the string in your own `session` field), which is not always your filename.
+Set it explicitly, or a seat whose role and file differ silently filters out everything meant for it.
+
+### Optional: a status digest, if you want ambient awareness
+
+Status is pull, so by default you never see peers' progress scroll by, which is the point. If a seat
+genuinely wants ambient awareness (a coordinator, say), add a low-frequency digest INSTEAD of
+per-change status wakes: keep a small dict of the latest status per peer as they change (recorded in
+the loop already), and once every N cycles print ONE line summarising it, then move on. One bounded
+wake per interval, never one per change. Most heads-down seats should not bother, read a peer's status
+on demand when you actually need it.
+
+```python
+    # near the top:            DIGEST_EVERY = 40; _tick = 0     # 40 cycles ~ 10 min at 15s; 0 = off
+    # inside the loop, replace the status-is-pull `continue` with: record st into a
+    #   `latest[d.get('session')] = st` dict, then continue.
+    # after the for-loop:      _tick += 1
+    #   if DIGEST_EVERY and _tick % DIGEST_EVERY == 0 and latest:
+    #       print('[digest] ' + ' | '.join('%s: %s' % kv for kv in latest.items()), flush=True)
+    #       latest.clear()
+```
 
 ### Count monitors correctly BEFORE launching
 
