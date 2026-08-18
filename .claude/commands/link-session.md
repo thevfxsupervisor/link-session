@@ -58,6 +58,13 @@ expensive AND lossy.
 
     "message": "Retraction on the naming convention, see renders-RETRACTION-2026-05-14.md"
 
+**And cap it on the RECEIVE side too, so one seat's discipline is not everyone's exposure.** The
+monitor already emits only a peer's `status` plus a `[msg Nc]` POINTER, never the message or `data`
+body. Hold the same line when you READ peers on `/link-session` invocation: summarise each peer as its
+`status` and, if present, a pointer to its message, never by pulling the whole `message`/`data` into
+your context. A sender who ignores the caps then costs you a line, not their entire payload, and no
+fat broadcast can tax the fleet more than a pointer.
+
 ### Keep the payload STABLE
 
 Peers detect change by hashing `(status, message, data)`, so **anything varying per cycle turns your
@@ -109,7 +116,7 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON2: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# LSMON3: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast) or a LOUD marker. A peer's STATUS change no longer wakes anyone - read a peer's
 # status on demand instead. Targeted comms: you are woken by what involves you, not by other
 # seats' progress. Want ambient awareness anyway? Add the optional status digest below.
