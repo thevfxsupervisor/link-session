@@ -114,7 +114,7 @@ Write `CHANNEL_DIR/monitor_<own>.py` once, substituting `DIR`, `OWN`, and `ME` (
 name, so the `to:` match works when your outbox filename differs from your role):
 
 ```python
-import json, os, time
+import json, os, re, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
 # LSMON4: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast) or a LOUD marker. A peer's STATUS change no longer wakes anyone - read a peer's
@@ -122,6 +122,27 @@ DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = 
 # seats' progress. Want ambient awareness anyway? Add the optional status digest below.
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
+
+# --- CANON FIXES. Each was learned by a seat paying for its absence; folding them in here so that
+# --- regenerating from this template stops REGRESSING seats. (demoreel adopted LSMON4 on 2026-08-18
+# --- and lost ts-normalisation; three other seats declined to regenerate for the same reason.)
+
+# 1. NORMALISE TIMESTAMPS BEFORE HASHING (canon 904a857). A peer whose heartbeat writes its own clock
+#    into status hashes differently every tick, so every heartbeat looks like news and wakes everyone.
+#    Content-hashing works perfectly and still produces pure noise without this.
+_TS = re.compile(r'\d{4}-\d{2}-\d{2}[ T]?\d{2}:\d{2}(:\d{2})?|\d{2}:\d{2}:\d{2}')
+def _norm(x): return _TS.sub('<ts>', str(x))
+
+# 2. DROP A HEARTBEAT-ONLY WATCHER BY IDENTITY (canon b7edfc4). When normalising a noisy non-actor
+#    keeps losing, name the cause instead of chasing each varying field. Keep ONLY the loud-marker
+#    escape: an escape hatch keyed on "is this field non-empty" goes permanently open the moment the
+#    peer starts populating it (hermes moved its tick into `message` and killed exactly such a guard).
+#    Match the FILENAME, never the rollcall handle: the roster says hermes-wintermute, the outbox is
+#    still hermes.json. Key on the RESOURCE.
+def suppress(fn, d):
+    if fn != 'hermes.json': return False
+    blob = f"{d.get('status','')} {d.get('message','')}".upper()
+    return not any(k in blob for k in LOUD)
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one. Say so, once.
     if not os.path.isdir(DIR) or not os.path.isfile(os.path.join(DIR, OWN)):
@@ -133,7 +154,17 @@ while True:
     try:
         if json.load(open(os.path.join(DIR, OWN))).get('stop'): break
     except Exception: pass
-    for n in sorted(os.listdir(DIR)):
+    # A precondition does not protect what follows it: the guard above can pass and the mount can
+    # drop mid-cycle, and os.listdir then raises (errno 57 / 2) and KILLS the monitor. The seat is
+    # then silently deaf, which is far worse than the noise the guard exists to stop.
+    try:
+        _names = sorted(os.listdir(DIR))
+    except OSError as e:
+        if not warned:
+            print('MONITOR WARNING: channel vanished mid-cycle (errno %s); retrying' % e.errno, flush=True)
+            warned = True
+        time.sleep(15); continue
+    for n in _names:
         if not n.endswith('.json') or n == OWN: continue
         try: d = json.load(open(os.path.join(DIR, n)))
         except Exception: continue
@@ -141,7 +172,7 @@ while True:
         # into shared folders; anything treating every .json as a peer eventually adopts a
         # state cache as a colleague, and caches change on every write.
         if not isinstance(d, dict) or 'session' not in d or 'status' not in d: continue
-        sig = json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True)
+        sig = _norm(json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True))
         if seen.get(n) == sig: continue
         seen[n] = sig                             # record EVERY change, so nothing re-fires
         if first: continue                        # baseline: record, never replay
@@ -151,6 +182,7 @@ while True:
         # STATUS IS PULL. A change with no message and no loud marker is PROGRESS, not a
         # request: it is recorded above but wakes NOBODY. This is what makes the channel
         # targeted - a peer grinding on unrelated work no longer costs you a turn.
+        if suppress(n, d): continue      # WIRE IT. An unwired guard passes its own unit tests.
         if not m and not loud:
             continue
         # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
