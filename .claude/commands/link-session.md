@@ -116,7 +116,7 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON3: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# LSMON4: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast) or a LOUD marker. A peer's STATUS change no longer wakes anyone - read a peer's
 # status on demand instead. Targeted comms: you are woken by what involves you, not by other
 # seats' progress. Want ambient awareness anyway? Add the optional status digest below.
@@ -156,7 +156,11 @@ while True:
         # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
         # or blank = broadcast); a loud marker always delivers. to: may be a name or a list.
         to = d.get('to') or ''
-        recips = to if isinstance(to, list) else ([to] if to else [])
+        # Parse comma OR space separated recipients: "a, b" and "a b" and ["a","b"] all become
+        # ["a","b"], so MEMBERSHIP works. Wrapping "a, b" as one element (the old bug) compared
+        # ME to the whole string and silently DROPPED every multi-recipient message.
+        recips = ([str(x).strip() for x in to] if isinstance(to, list)
+                  else str(to).replace(',', ' ').split())
         if recips and ME not in recips and not loud:
             continue
         tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
