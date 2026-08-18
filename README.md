@@ -34,6 +34,14 @@ restarted, the file still said exactly where things stood.
   change, so you find out about a peer's progress without polling.
 - A small set of rules (below) keeps it safe under real concurrency and unreliable mounts.
 
+## Starting a new session from a template
+
+`/link-session new <repo>` bootstraps a fresh session into a role. You start Claude in a folder, then
+point it at a repo that carries `type: bootstrap` templates: the skill lists them, you pick one, and
+it loads that role's starting context, writes its `CLAUDE.md`, and checks that the folders and tools
+the role needs are present before you begin. The templates live in whatever repo you name; the skill
+itself stays generic and holds none of their content. The template format is documented in the skill.
+
 ## The rules that keep it safe
 
 These exist because each one failed in production first. They are the difference between a toy and
