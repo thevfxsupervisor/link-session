@@ -65,6 +65,16 @@ body. Hold the same line when you READ peers on `/link-session` invocation: summ
 your context. A sender who ignores the caps then costs you a line, not their entire payload, and no
 fat broadcast can tax the fleet more than a pointer.
 
+### When to write: only on a state change
+
+Size is half the cost; frequency is the other half. **The channel is a coordination surface, not a
+work journal.** Write your outbox when SHARED STATE changes, something a peer must see to act
+correctly, not to narrate your own progress. A step you took, a file you read, a check you ran, a
+decision you reached alone: none of it is news to a peer, and each write is pulled into every peer's
+context. If your update would only say "still working" or "verified that for myself", do not send it;
+the file's mtime already proves you are alive. Batch a burst of activity into one update when it
+settles, never one bump per step.
+
 ### Keep the payload STABLE
 
 Peers detect change by hashing `(status, message, data)`, so **anything varying per cycle turns your
