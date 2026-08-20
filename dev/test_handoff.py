@@ -100,6 +100,25 @@ def main():
     except Exception as e:
         check("mal.unacked-nondict-data", False, "raised %r" % e)
 
+    # 4) a non-dict OWN OUTBOX object (not just its .data) must not raise - the handoff-blind bug:
+    #    mine.get() on a non-dict raises, the loop's try/except swallows it, and EVERY handoff to you
+    #    drops silently while the monitor looks healthy. (Geoff/permafrost-bidding fix, 2026-08-20.)
+    try:
+        r = H.handoff_line(offer, "corrupt not-a-dict outbox", ME)
+        check("mal.nondict-mine-object", r is not None and "HANDOFF from ws14" in r,
+              "a pending handoff must still surface when own outbox is corrupt: %r" % r)
+    except Exception as e:
+        check("mal.nondict-mine-object", False, "raised %r" % e)
+    try:
+        w = H.unacked([offer], ["corrupt", "outbox"], ME)
+        check("mal.unacked-nondict-mine", any("UNACKED handoff from ws14" in x for x in w), repr(w))
+    except Exception as e:
+        check("mal.unacked-nondict-mine", False, "raised %r" % e)
+    try:
+        check("mal.nondict-peer-object", H.handoff_line("corrupt", mine_none, ME) is None)
+    except Exception as e:
+        check("mal.nondict-peer-object", False, "raised %r" % e)
+
     # --- startup_sweep: baseline pass must re-surface a pending handoff (restart gap) ---
     check("sweep.surfaces-pending",
           any("HANDOFF from ws14" in x for x in H.startup_sweep([offer, ob("demoreel")], mine_none, ME)))
