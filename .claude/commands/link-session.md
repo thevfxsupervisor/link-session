@@ -460,10 +460,24 @@ GREEN-LIT versus PENDING the principal, and for anything outward-facing post an 
 final assembly or ship until the principal signs off. Correct, fast peer execution is exactly what
 races past a decision nobody has made yet.
 
-**Two layers, do not confuse them.** The channel is for LIVE, EPHEMERAL coordination. Durable state
-that must stay identical across machines (shared skills, config, portable knowledge) belongs in
-**version control**: mount-independent, versioned, its own backup. Never treat the channel as the
-source of truth for anything you would be sad to lose.
+**Three layers, do not confuse them.**
+
+- **The channel** is for LIVE, EPHEMERAL coordination only: outboxes, the monitor, and short
+  author-named notes that POINT at something. Never treat it as the source of truth for anything you
+  would be sad to lose.
+- **Version control** holds durable state that must stay identical across machines: shared skills,
+  config, portable knowledge. Mount-independent, versioned, backed up.
+- **The project folder** holds artifacts, assets, renders and deliverables for a specific project.
+  A produced file goes THERE, and the channel gets only a POINTER to it, never the file.
+
+**Never write a project artifact into the channel.** It is a coordination surface a watcher scans,
+not a drop for renders, images, mockups or working files. If you are asked to produce something for a
+project and you do not know where that project lives, **ASK for the destination folder before you
+start** - do not default to your CWD or this channel. A work request that yields artifacts should
+name the destination; if it does not, that is the first question back, not a reason to dump output
+here. **The producer files its own output in the project folder and posts a pointer**, so there is no
+separate cleanup job: nothing landed in the channel to clean. A janitor moving another seat's
+artifact cannot know which project it belongs to, which is exactly how a deliverable gets misfiled.
 
 **Restart reflex.** After any restart, re-invoke this skill BEFORE real work. Do not read "no events"
 right after a restart as "no messages". An agent with its own scheduler should run its monitor as a
