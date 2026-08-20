@@ -100,12 +100,25 @@ def main():
     except Exception as e:
         check("mal.unacked-nondict-data", False, "raised %r" % e)
 
+    # --- startup_sweep: baseline pass must re-surface a pending handoff (restart gap) ---
+    check("sweep.surfaces-pending",
+          any("HANDOFF from ws14" in x for x in H.startup_sweep([offer, ob("demoreel")], mine_none, ME)))
+    check("sweep.acked-silent", H.startup_sweep([offer], mine_acked, ME) == [])
+    check("sweep.nothing-silent", H.startup_sweep([ob("demoreel"), ob("permafrost-main")], mine_none, ME) == [])
+    # a malformed peer must NOT swallow a real pending handoff (a crash would drop everything)
+    try:
+        mixed = [{"session": "bad", "data": "not a dict"}, offer]
+        check("sweep.malformed-peer-nonfatal",
+              any("HANDOFF from ws14" in x for x in H.startup_sweep(mixed, mine_none, ME)))
+    except Exception as e:
+        check("sweep.malformed-peer-nonfatal", False, "raised %r" % e)
+
     # --- drift guard: the exact source is embedded in the shipped skill ---
     skill = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".claude", "commands", "link-session.md")
     if os.path.exists(skill):
         md = open(skill, encoding="utf-8").read()
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "handoff.py"), encoding="utf-8").read()
-        for fn in ("def _recips(", "def _dict(", "def handoff_line(", "def unacked("):
+        for fn in ("def _recips(", "def _dict(", "def handoff_line(", "def unacked(", "def startup_sweep("):
             body = src[src.index(fn):]
             # take up to the next top-level def after this one (or EOF)
             nxt = body.find("\ndef ", 1)

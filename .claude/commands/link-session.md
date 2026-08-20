@@ -192,13 +192,14 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, re, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON6: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# LSMON7: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast), a LOUD marker, or a HANDOFF addressed to you (offered, or your offer being acked).
 # A peer's STATUS change no longer wakes anyone - read a peer's status on demand instead. Targeted
 # comms: you are woken by what involves you, not by other seats' progress. Want ambient awareness
 # anyway? Add the optional status digest below.
-# (LSMON6 = LSMON5 hardened: a `to` list now routes, and a malformed data/handoff/ack no longer
-#  crashes the monitor - an outbox is untrusted input, your own included. Found in review 2026-08-20.)
+# (LSMON7 = handoffs, hardened: a `to` list routes; a malformed data/handoff/ack cannot crash the
+#  monitor (an outbox is untrusted input, your own included); and a one-shot startup sweep re-surfaces
+#  a handoff already pending when the monitor starts, so a restart cannot hide it. Review 2026-08-20.)
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
 
@@ -255,6 +256,21 @@ def handoff_line(peer, mine, me):
         lines.append("%s ACKed your handoff [%s]: %s"
                      % (peer.get("session"), str(ak.get("verdict") or "?"), extra))
     return "\n".join(lines) if lines else None
+def startup_sweep(peers, mine, me):
+    """One-shot on the monitor's baseline pass. Baseline-never-replay is right for status
+    and messages, but WRONG for a pending handoff: an offer already sitting in a peer's outbox
+    when the monitor starts would be recorded silently and never surface, so a restart would
+    hide exactly the work the feature exists to expose. This re-surfaces outstanding handoffs
+    at startup so the safety net does not depend on someone remembering to re-invoke."""
+    out = []
+    for p in peers:
+        try:
+            line = handoff_line(p, mine, me)
+        except Exception:
+            line = None
+        if line:
+            out.append(line)
+    return out
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one. Say so, once.
     if not os.path.isdir(DIR) or not os.path.isfile(os.path.join(DIR, OWN)):
@@ -278,6 +294,7 @@ while True:
             print('MONITOR WARNING: channel vanished mid-cycle (errno %s); retrying' % e.errno, flush=True)
             warned = True
         time.sleep(15); continue
+    _base = []                                    # peers seen this baseline pass, for the startup sweep
     for n in _names:
         if not n.endswith('.json') or n == OWN: continue
         try: d = json.load(open(os.path.join(DIR, n)))
@@ -289,7 +306,7 @@ while True:
         sig = _norm(json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True))
         if seen.get(n) == sig: continue
         seen[n] = sig                             # record EVERY change, so nothing re-fires
-        if first: continue                        # baseline: record, never replay
+        if first: _base.append(d); continue       # baseline: record silently; sweep handoffs after the loop
         # A handoff/ack PUSHES (a request is not progress), and runs BEFORE suppress so a suppress()
         # that filters on to: - or an outbox-level to: - cannot hide a handoff addressed to you.
         # Wrapped: a malformed peer outbox must never raise here, or one seat's typo deafens yours.
@@ -318,6 +335,9 @@ while True:
         tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
         stag = '  [stopped]' if d.get('stop') else ''
         print('%s: %s%s%s' % (d.get('session'), st[:120], stag, tag), flush=True)
+    if first:                                     # one-shot: re-surface a handoff already pending at
+        for _hl in startup_sweep(_base, my_d, ME):  # startup, which baseline-never-replay would hide
+            print(_hl, flush=True)
     first = False
     time.sleep(15)
 ```

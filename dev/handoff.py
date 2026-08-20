@@ -76,3 +76,20 @@ def unacked(peers, mine, me):
             warns.append("your handoff to %s is UNACKED: %s"
                          % (my_ho.get("to"), str(my_ho.get("task") or "")[:80]))
     return warns
+
+
+def startup_sweep(peers, mine, me):
+    """One-shot on the monitor's baseline pass. Baseline-never-replay is right for status
+    and messages, but WRONG for a pending handoff: an offer already sitting in a peer's outbox
+    when the monitor starts would be recorded silently and never surface, so a restart would
+    hide exactly the work the feature exists to expose. This re-surfaces outstanding handoffs
+    at startup so the safety net does not depend on someone remembering to re-invoke."""
+    out = []
+    for p in peers:
+        try:
+            line = handoff_line(p, mine, me)
+        except Exception:
+            line = None
+        if line:
+            out.append(line)
+    return out
