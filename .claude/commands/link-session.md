@@ -43,7 +43,7 @@ watcher surfaces the others' changes. No server, no daemon, no message bus.
 | `status` | Always-current one-liner. **Cap 120 chars** |
 | `message` | One-off note. **Cap 280 chars.** Clear it once acknowledged |
 | `to` | Who the message is FOR: a name, or a list of names; blank = broadcast. A routing hint, not a delivery filter, see below |
-| `data` | Small structured payload. Keys and short values, not prose |
+| `data` | Small structured payload. Keys and short values, not prose. Reserved keys `handoff`/`ack` drive the handoff lifecycle, see Handoffs |
 | `done`/`stop` | Both true closes the channel |
 
 ### Size is a context budget, not a style note
@@ -109,6 +109,68 @@ invisible to everyone except renders. If it mattered to the fleet, it needed a b
 doubt, broadcast: an unwanted line costs one glance, but a hidden correction costs the whole fleet
 acting on a premise you already took back.
 
+## Handoffs: offer, acknowledge, and surface the silent one
+
+link-session's worst failure is the SILENT handoff: you pass work to a peer, and an unread request
+looks, from your side, exactly like work in progress. You report it done; it never happened. So a
+handoff here has a visible lifecycle, and a pending one cannot hide.
+
+**Offer** (sender). Write the detail to an author-named `.md` FIRST (doorbell order), then set one
+handoff in your own outbox `data`:
+
+```json
+"data": {"handoff": {"id": "renders-h1", "to": "comp", "task": "grade shots 010-040",
+                     "detail": "renders-HANDOFF-h1.md"}}
+```
+
+Keep `task` to a line; the `.md` carries the context, what you tried, the next steps and the success
+criteria. One open handoff per outbox (single-slot, like `message`); clear it once acked and done.
+You do NOT also send a message, the monitor pushes a `data.handoff` addressed to a peer even with no
+message, because a handoff is a request, not progress.
+
+**Acknowledge** (receiver). You write the ack in YOUR OWN outbox (one writer per file), by `id`:
+
+```json
+"data": {"ack": {"id": "renders-h1", "verdict": "accepted", "understood": "colour-grade 010-040 to the ref"}}
+```
+
+`understood` restates the task in your OWN words. That restatement is the check: it catches "received
+but misread" before any work happens, the same verify-from-the-other-side the rest of this skill runs
+on. To decline, set `verdict: "declined"` with a `reason`; a "no" is a first-class, visible outcome,
+never silence.
+
+**See the silent one.** The monitor pushes a handoff to you the moment it is offered, and a peer's ack
+the moment it lands. But a one-time push is not enough for something that must not be dropped, so at
+every `/link-session` invocation sweep for handoffs still needing attention, offered to you and
+unacked, or your own offer its target has not acked:
+
+```python
+def _recips(v):
+    return str(v or "").replace(",", " ").split()
+def unacked(peers, mine, me):
+    warns = []
+    mdata = mine.get("data") or {}
+    my_ho = mdata.get("handoff") or {}
+    my_ak = mdata.get("ack") or {}
+    for p in peers:
+        ho = (p.get("data") or {}).get("handoff") or {}
+        if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
+            warns.append("UNACKED handoff from %s: %s"
+                         % (p.get("session"), str(ho.get("task") or "")[:80]))
+    if my_ho.get("id"):
+        target = _recips(my_ho.get("to"))
+        acked = any((p.get("data") or {}).get("ack", {}).get("id") == my_ho["id"]
+                    for p in peers if p.get("session") in target)
+        if not acked:
+            warns.append("your handoff to %s is UNACKED: %s"
+                         % (my_ho.get("to"), str(my_ho.get("task") or "")[:80]))
+    return warns
+```
+
+An unacked handoff is your SIGNAL that the work did not land. This does not soften the standing rule,
+do not hand a peer work that MUST get done, but it makes the handoffs you do make honest: offered work
+is visibly pending until accepted, and a decline is visible too.
+
 ## The monitor
 
 **Use the Monitor tool, not a hidden background process.** Write the poller to a FILE and run the
@@ -126,10 +188,11 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, re, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON4: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
-# broadcast) or a LOUD marker. A peer's STATUS change no longer wakes anyone - read a peer's
-# status on demand instead. Targeted comms: you are woken by what involves you, not by other
-# seats' progress. Want ambient awareness anyway? Add the optional status digest below.
+# LSMON5: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# broadcast), a LOUD marker, or a HANDOFF addressed to you (offered, or your offer being acked).
+# A peer's STATUS change no longer wakes anyone - read a peer's status on demand instead. Targeted
+# comms: you are woken by what involves you, not by other seats' progress. Want ambient awareness
+# anyway? Add the optional status digest below.
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
 
@@ -153,6 +216,33 @@ def suppress(fn, d):
     if fn != 'watcher.json': return False
     blob = f"{d.get('status','')} {d.get('message','')}".upper()
     return not any(k in blob for k in LOUD)
+
+# 3. HANDOFFS PUSH, AND A PENDING ONE STAYS VISIBLE. A handoff lives in the offerer's data.handoff
+#    and is acked in the receiver's OWN data.ack (one writer per file). It is a request, not progress,
+#    so it pushes even with no message. handoff_line surfaces a handoff addressed to me, or a peer's
+#    ack of my offer. The invocation-time sweep (unacked(), in the Handoffs section) is what keeps a
+#    still-unacked handoff visible instead of firing once and vanishing.
+def _recips(v):
+    return str(v or "").replace(",", " ").split()
+def handoff_line(peer, mine, me):
+    pdata = peer.get("data") or {}
+    ho = pdata.get("handoff") or {}
+    ak = pdata.get("ack") or {}
+    mdata = mine.get("data") or {}
+    my_ho = mdata.get("handoff") or {}
+    my_ak = mdata.get("ack") or {}
+    lines = []
+    if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
+        det = (" - see %s" % ho["detail"]) if ho.get("detail") else ""
+        lines.append("HANDOFF from %s [NEEDS ACK]: %s%s"
+                     % (peer.get("session"), str(ho.get("task") or "")[:120], det))
+    if ak.get("id") and ak.get("id") == my_ho.get("id"):
+        extra = str(ak.get("understood") or "")[:120]
+        if ak.get("verdict") == "declined" and ak.get("reason"):
+            extra = (extra + " - " + str(ak["reason"]))[:180]
+        lines.append("%s ACKed your handoff [%s]: %s"
+                     % (peer.get("session"), str(ak.get("verdict") or "?"), extra))
+    return "\n".join(lines) if lines else None
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one. Say so, once.
     if not os.path.isdir(DIR) or not os.path.isfile(os.path.join(DIR, OWN)):
@@ -161,8 +251,10 @@ while True:
             warned = True
         time.sleep(15); continue
     warned = False
-    try:
-        if json.load(open(os.path.join(DIR, OWN))).get('stop'): break
+    my_d = {}                                   # my own outbox: needed to tell an unacked handoff
+    try:                                         # from one I have already acked
+        my_d = json.load(open(os.path.join(DIR, OWN)))
+        if my_d.get('stop'): break
     except Exception: pass
     # A precondition does not protect what follows it: the guard above can pass and the mount can
     # drop mid-cycle, and os.listdir then raises (errno 57 / 2) and KILLS the monitor. The seat is
@@ -193,6 +285,8 @@ while True:
         # request: it is recorded above but wakes NOBODY. This is what makes the channel
         # targeted - a peer grinding on unrelated work no longer costs you a turn.
         if suppress(n, d): continue      # WIRE IT. An unwired guard passes its own unit tests.
+        hl = handoff_line(d, my_d, ME)   # a HANDOFF to me, or an ACK of my offer, PUSHES (no message needed)
+        if hl: print(hl, flush=True)
         if not m and not loud:
             continue
         # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
@@ -346,6 +440,9 @@ standing job so it survives on its own.
   a peer is dead from mtime alone there.
 - Both `done:true` but neither `stop:true` -> prompt to run `/link-session stop`.
 - Any peer with a non-empty `message` -> summarise it; if it carries a `to`, note who it is for.
+- Run `unacked(peers, my_outbox, ME)` (see Handoffs) -> any handoff offered to you that you have not
+  acked, and any offer of yours its target has not acked. An unacked handoff is the silent-failure
+  signal made visible: ack it (accept or decline), or chase your own if it is going stale.
 
 ## Stop protocol
 
