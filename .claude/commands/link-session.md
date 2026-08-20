@@ -207,7 +207,7 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, re, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON7: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# LSMON8: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast), a LOUD marker, or a HANDOFF addressed to you (offered, or your offer being acked).
 # A peer's STATUS change no longer wakes anyone - read a peer's status on demand instead. Targeted
 # comms: you are woken by what involves you, not by other seats' progress. Want ambient awareness
@@ -215,6 +215,8 @@ DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = 
 # (LSMON7 = handoffs, hardened: a `to` list routes; a malformed data/handoff/ack cannot crash the
 #  monitor (an outbox is untrusted input, your own included); and a one-shot startup sweep re-surfaces
 #  a handoff already pending when the monitor starts, so a restart cannot hide it. Review 2026-08-20.)
+# (LSMON8 = the emit line now shows WHO a message is for, so a loud marker addressed elsewhere is
+#  visibly not yours. Everything else is identical to LSMON7.)
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
 
@@ -355,7 +357,12 @@ while True:
             continue
         tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
         stag = '  [stopped]' if d.get('stop') else ''
-        print('%s: %s%s%s' % (d.get('session'), st[:120], stag, tag), flush=True)
+        # SHOW WHO IT IS FOR. A loud marker bypasses the to: filter by design, so without this a
+        # CORRECTION addressed to another seat reads exactly like one addressed to you, and you
+        # spend a turn on someone else's business. Blank to: (a broadcast) needs no tag.
+        rtag = '' if not recips else ('  [-> %s]' % ', '.join(recips) if ME not in recips
+                                      else '  [-> you]')
+        print('%s: %s%s%s%s' % (d.get('session'), st[:120], stag, rtag, tag), flush=True)
     if first:                                     # one-shot: re-surface a handoff already pending at
         for _hl in startup_sweep(_base, my_d, ME):  # startup, which baseline-never-replay would hide
             print(_hl, flush=True)
