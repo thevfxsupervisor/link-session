@@ -38,10 +38,15 @@ def _dict(v):
 
 
 def handoff_line(peer, mine, me):
-    pdata = _dict(peer.get("data"))
+    # YOUR OWN OUTBOX IS INPUT, NOT AN INVARIANT. It is a .json on a shared mount that a human, a
+    # tool, or a half-finished edit can reshape, so it gets a stranger's validation. If `mine` ever
+    # parses to a non-dict, `mine.get` raises AttributeError; the monitor's try/except then swallows
+    # it and EVERY handoff addressed to you is dropped silently, forever, while the loop looks
+    # healthy. That is the exact silent-handoff failure this feature exists to prevent.
+    pdata = _dict(_dict(peer).get("data"))
     ho = _dict(pdata.get("handoff"))
     ak = _dict(pdata.get("ack"))
-    mdata = _dict(mine.get("data"))
+    mdata = _dict(_dict(mine).get("data"))
     my_ho = _dict(mdata.get("handoff"))
     my_ak = _dict(mdata.get("ack"))
     lines = []
@@ -60,7 +65,7 @@ def handoff_line(peer, mine, me):
 
 def unacked(peers, mine, me):
     warns = []
-    mdata = _dict(mine.get("data"))
+    mdata = _dict(_dict(mine).get("data"))   # same reason as handoff_line: `mine` is untrusted
     my_ho = _dict(mdata.get("handoff"))
     my_ak = _dict(mdata.get("ack"))
     for p in peers:
