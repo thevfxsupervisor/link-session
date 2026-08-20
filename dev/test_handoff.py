@@ -65,12 +65,47 @@ def main():
     peers3 = [ob("mint", ack={"id": "h3", "verdict": "accepted"})]
     check("un.sender-acked-clear", H.unacked(peers3, my_ob, "ws14") == [])
 
+    # --- MALFORMED INPUT (the review by permafrost-bidding + macbook-wintermute). These must never
+    # raise: an exception inside handoff_line runs in the monitor loop and would deafen the seat.
+    # 1) `to` as a real JSON list must reach the seats it names (not stringify to garbage).
+    offer_list = ob("ws14", handoff={"id": "hL", "to": ["mint", "demoreel"], "task": "list route"})
+    ll = H.handoff_line(offer_list, mine_none, ME)
+    check("mal.list-to-reaches", ll and "HANDOFF from ws14" in ll, repr(ll))
+    check("mal.list-to-unacked-sweep", any("hL" for _ in [0]) and
+          any("UNACKED handoff from ws14" in x for x in H.unacked([offer_list], mine_none, ME)))
+    # 2) a non-dict handoff/ack must be ignored, not crash.
+    try:
+        r = H.handoff_line(ob("ws14", handoff="oops not a dict"), mine_none, ME)
+        check("mal.nondict-handoff", r is None)
+    except Exception as e:
+        check("mal.nondict-handoff", False, "raised %r" % e)
+    try:
+        r = H.handoff_line(ob("mint", ack=["not", "a", "dict"]), my_offer, "ws14")
+        check("mal.nondict-ack", r is None)
+    except Exception as e:
+        check("mal.nondict-ack", False, "raised %r" % e)
+    # 3) a non-dict `data` on EITHER side (peer's, or my own) must not crash - macbook's third find.
+    try:
+        peer_baddata = {"session": "ws14", "status": "", "data": "not a dict"}
+        check("mal.nondict-peer-data", H.handoff_line(peer_baddata, mine_none, ME) is None)
+    except Exception as e:
+        check("mal.nondict-peer-data", False, "raised %r" % e)
+    try:
+        my_baddata = {"session": "mint", "status": "", "data": 12345}
+        check("mal.nondict-my-data", H.handoff_line(offer, my_baddata, ME) is not None)  # still surfaces
+    except Exception as e:
+        check("mal.nondict-my-data", False, "raised %r" % e)
+    try:
+        check("mal.unacked-nondict-data", H.unacked([{"session": "ws14", "data": "x"}], {"data": None}, ME) == [])
+    except Exception as e:
+        check("mal.unacked-nondict-data", False, "raised %r" % e)
+
     # --- drift guard: the exact source is embedded in the shipped skill ---
     skill = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".claude", "commands", "link-session.md")
     if os.path.exists(skill):
         md = open(skill, encoding="utf-8").read()
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "handoff.py"), encoding="utf-8").read()
-        for fn in ("def _recips(", "def handoff_line(", "def unacked("):
+        for fn in ("def _recips(", "def _dict(", "def handoff_line(", "def unacked("):
             body = src[src.index(fn):]
             # take up to the next top-level def after this one (or EOF)
             nxt = body.find("\ndef ", 1)

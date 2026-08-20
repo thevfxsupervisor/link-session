@@ -146,20 +146,24 @@ unacked, or your own offer its target has not acked:
 
 ```python
 def _recips(v):
+    if isinstance(v, (list, tuple)):
+        return [str(t).strip() for t in v if str(t).strip()]
     return str(v or "").replace(",", " ").split()
+def _dict(v):
+    return v if isinstance(v, dict) else {}
 def unacked(peers, mine, me):
     warns = []
-    mdata = mine.get("data") or {}
-    my_ho = mdata.get("handoff") or {}
-    my_ak = mdata.get("ack") or {}
+    mdata = _dict(mine.get("data"))
+    my_ho = _dict(mdata.get("handoff"))
+    my_ak = _dict(mdata.get("ack"))
     for p in peers:
-        ho = (p.get("data") or {}).get("handoff") or {}
+        ho = _dict(_dict(p.get("data")).get("handoff"))
         if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
             warns.append("UNACKED handoff from %s: %s"
                          % (p.get("session"), str(ho.get("task") or "")[:80]))
     if my_ho.get("id"):
         target = _recips(my_ho.get("to"))
-        acked = any((p.get("data") or {}).get("ack", {}).get("id") == my_ho["id"]
+        acked = any(_dict(_dict(p.get("data")).get("ack")).get("id") == my_ho["id"]
                     for p in peers if p.get("session") in target)
         if not acked:
             warns.append("your handoff to %s is UNACKED: %s"
@@ -188,11 +192,13 @@ name, so the `to:` match works when your outbox filename differs from your role)
 ```python
 import json, os, re, time
 DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = your session name (for to:)
-# LSMON5: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
+# LSMON6: status is PULL, not push. This monitor wakes you ONLY on a MESSAGE for you (or a
 # broadcast), a LOUD marker, or a HANDOFF addressed to you (offered, or your offer being acked).
 # A peer's STATUS change no longer wakes anyone - read a peer's status on demand instead. Targeted
 # comms: you are woken by what involves you, not by other seats' progress. Want ambient awareness
 # anyway? Add the optional status digest below.
+# (LSMON6 = LSMON5 hardened: a `to` list now routes, and a malformed data/handoff/ack no longer
+#  crashes the monitor - an outbox is untrusted input, your own included. Found in review 2026-08-20.)
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
 seen = {}; first = True; warned = False
 
@@ -220,17 +226,23 @@ def suppress(fn, d):
 # 3. HANDOFFS PUSH, AND A PENDING ONE STAYS VISIBLE. A handoff lives in the offerer's data.handoff
 #    and is acked in the receiver's OWN data.ack (one writer per file). It is a request, not progress,
 #    so it pushes even with no message. handoff_line surfaces a handoff addressed to me, or a peer's
-#    ack of my offer. The invocation-time sweep (unacked(), in the Handoffs section) is what keeps a
-#    still-unacked handoff visible instead of firing once and vanishing.
+#    ack of my offer. The invocation-time sweep (unacked(), in the Handoffs section) keeps a
+#    still-unacked handoff visible instead of firing once and vanishing. An OUTBOX is untrusted input,
+#    yours included: `to` may be a real list, and data/handoff/ack may be malformed. Coerce on TYPE,
+#    never on truthiness ("handoff": "text" is truthy and .get() would raise and crash the monitor).
 def _recips(v):
+    if isinstance(v, (list, tuple)):
+        return [str(t).strip() for t in v if str(t).strip()]
     return str(v or "").replace(",", " ").split()
+def _dict(v):
+    return v if isinstance(v, dict) else {}
 def handoff_line(peer, mine, me):
-    pdata = peer.get("data") or {}
-    ho = pdata.get("handoff") or {}
-    ak = pdata.get("ack") or {}
-    mdata = mine.get("data") or {}
-    my_ho = mdata.get("handoff") or {}
-    my_ak = mdata.get("ack") or {}
+    pdata = _dict(peer.get("data"))
+    ho = _dict(pdata.get("handoff"))
+    ak = _dict(pdata.get("ack"))
+    mdata = _dict(mine.get("data"))
+    my_ho = _dict(mdata.get("handoff"))
+    my_ak = _dict(mdata.get("ack"))
     lines = []
     if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
         det = (" - see %s" % ho["detail"]) if ho.get("detail") else ""
@@ -278,6 +290,12 @@ while True:
         if seen.get(n) == sig: continue
         seen[n] = sig                             # record EVERY change, so nothing re-fires
         if first: continue                        # baseline: record, never replay
+        # A handoff/ack PUSHES (a request is not progress), and runs BEFORE suppress so a suppress()
+        # that filters on to: - or an outbox-level to: - cannot hide a handoff addressed to you.
+        # Wrapped: a malformed peer outbox must never raise here, or one seat's typo deafens yours.
+        try: hl = handoff_line(d, my_d, ME)
+        except Exception: hl = None
+        if hl: print(hl, flush=True)
         m = (d.get('message') or '').strip()
         st = (d.get('status') or '')
         loud = any(k in (st + ' ' + m).upper() for k in LOUD)
@@ -285,8 +303,6 @@ while True:
         # request: it is recorded above but wakes NOBODY. This is what makes the channel
         # targeted - a peer grinding on unrelated work no longer costs you a turn.
         if suppress(n, d): continue      # WIRE IT. An unwired guard passes its own unit tests.
-        hl = handoff_line(d, my_d, ME)   # a HANDOFF to me, or an ACK of my offer, PUSHES (no message needed)
-        if hl: print(hl, flush=True)
         if not m and not loud:
             continue
         # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,

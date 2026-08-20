@@ -17,23 +17,33 @@ Two views:
 - handoff_line(peer, mine, me): the monitor's per-peer surface. A handoff to me
   that I have not acked PUSHES (even with no message); a peer's ack of MY offer
   pushes back. Returns a line or None.
-- unacked(peers, mine, me): the invocation-time sweep. Warns about handoffs to
-  me I have not acked, and my own offer that its target has not acked. This is
-  what keeps a pending handoff VISIBLE rather than firing once and vanishing.
+- unacked(peers, mine, me): the invocation-time sweep that keeps a pending
+  handoff VISIBLE rather than firing once and vanishing.
+
+Hardened after review by permafrost-bidding (2026-08-20): `to` may be a real
+JSON list (not only a comma/space string), and `data`/`handoff`/`ack` may be
+malformed (a non-dict), which must NOT raise - an exception here would crash the
+monitor and deafen the seat. Coerce on TYPE, never on truthiness.
 """
 
 
 def _recips(v):
+    if isinstance(v, (list, tuple)):
+        return [str(t).strip() for t in v if str(t).strip()]
     return str(v or "").replace(",", " ").split()
 
 
+def _dict(v):
+    return v if isinstance(v, dict) else {}
+
+
 def handoff_line(peer, mine, me):
-    pdata = peer.get("data") or {}
-    ho = pdata.get("handoff") or {}
-    ak = pdata.get("ack") or {}
-    mdata = mine.get("data") or {}
-    my_ho = mdata.get("handoff") or {}
-    my_ak = mdata.get("ack") or {}
+    pdata = _dict(peer.get("data"))
+    ho = _dict(pdata.get("handoff"))
+    ak = _dict(pdata.get("ack"))
+    mdata = _dict(mine.get("data"))
+    my_ho = _dict(mdata.get("handoff"))
+    my_ak = _dict(mdata.get("ack"))
     lines = []
     if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
         det = (" - see %s" % ho["detail"]) if ho.get("detail") else ""
@@ -50,17 +60,17 @@ def handoff_line(peer, mine, me):
 
 def unacked(peers, mine, me):
     warns = []
-    mdata = mine.get("data") or {}
-    my_ho = mdata.get("handoff") or {}
-    my_ak = mdata.get("ack") or {}
+    mdata = _dict(mine.get("data"))
+    my_ho = _dict(mdata.get("handoff"))
+    my_ak = _dict(mdata.get("ack"))
     for p in peers:
-        ho = (p.get("data") or {}).get("handoff") or {}
+        ho = _dict(_dict(p.get("data")).get("handoff"))
         if ho.get("id") and me in _recips(ho.get("to")) and my_ak.get("id") != ho.get("id"):
             warns.append("UNACKED handoff from %s: %s"
                          % (p.get("session"), str(ho.get("task") or "")[:80]))
     if my_ho.get("id"):
         target = _recips(my_ho.get("to"))
-        acked = any((p.get("data") or {}).get("ack", {}).get("id") == my_ho["id"]
+        acked = any(_dict(_dict(p.get("data")).get("ack")).get("id") == my_ho["id"]
                     for p in peers if p.get("session") in target)
         if not acked:
             warns.append("your handoff to %s is UNACKED: %s"
