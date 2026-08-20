@@ -75,6 +75,21 @@ context. If your update would only say "still working" or "verified that for mys
 the file's mtime already proves you are alive. Batch a burst of activity into one update when it
 settles, never one bump per step.
 
+### Three rules that keep coordination cheap
+
+The monitor cut WAKES; these cut the TURNS each wake costs, which is the real bill (a day of fleet
+chatter burned 16% of a weekly quota, 2026-08-20). All three, hard:
+
+1. **A monitor event is not a prompt to reply to the principal.** Act on it or stay silent. Do NOT
+   narrate a peer event back to them; a user-facing turn is only for something they must decide.
+2. **Broadcast is for ACTION; status is for awareness.** A blank-`to` message wakes every seat, so
+   reserve it for what they must all ACT on: a correction, a security flag, a shared-resource move.
+   Progress, "done", "relinked", "I found a copy", housekeeping, put it in `status` (pull, wakes
+   nobody) or a directed `to:` to the one seat that cares.
+3. **A discovered defect is ONE owner's investigation, not a fleet scavenger hunt.** When a shared
+   fact is found wrong, one seat owns tracing it; peers defer silently instead of each broadcasting
+   their own copy. N seats each re-finding the same defect is N times the traffic for one problem.
+
 ### Keep the payload STABLE
 
 Peers detect change by hashing `(status, message, data)`, so **anything varying per cycle turns your
