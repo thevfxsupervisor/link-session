@@ -102,7 +102,7 @@ def main():
 
     # 4) a non-dict OWN OUTBOX object (not just its .data) must not raise - the handoff-blind bug:
     #    mine.get() on a non-dict raises, the loop's try/except swallows it, and EVERY handoff to you
-    #    drops silently while the monitor looks healthy. (Geoff/permafrost-bidding fix, 2026-08-20.)
+    #    drops silently while the monitor looks healthy. (the own-outbox-not-an-invariant fix.)
     try:
         r = H.handoff_line(offer, "corrupt not-a-dict outbox", ME)
         check("mal.nondict-mine-object", r is not None and "HANDOFF from ws14" in r,

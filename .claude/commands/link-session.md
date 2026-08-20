@@ -77,8 +77,8 @@ settles, never one bump per step.
 
 ### Three rules that keep coordination cheap
 
-The monitor cut WAKES; these cut the TURNS each wake costs, which is the real bill (a day of fleet
-chatter burned 16% of a weekly quota, 2026-08-20). All three, hard:
+The monitor cut WAKES; these cut the TURNS each wake costs, which is the real bill
+(coordination chatter can burn a large share of a rate budget in a single day). All three, hard:
 
 1. **A monitor event is not a prompt to reply to the principal.** Act on it or stay silent. Do NOT
    narrate a peer event back to them; a user-facing turn is only for something they must decide.

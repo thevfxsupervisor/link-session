@@ -20,7 +20,7 @@ Two views:
 - unacked(peers, mine, me): the invocation-time sweep that keeps a pending
   handoff VISIBLE rather than firing once and vanishing.
 
-Hardened after review by permafrost-bidding (2026-08-20): `to` may be a real
+Hardened after review: `to` may be a real
 JSON list (not only a comma/space string), and `data`/`handoff`/`ack` may be
 malformed (a non-dict), which must NOT raise - an exception here would crash the
 monitor and deafen the seat. Coerce on TYPE, never on truthiness.
