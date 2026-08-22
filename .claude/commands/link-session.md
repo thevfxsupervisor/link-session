@@ -202,7 +202,16 @@ permission classifier may block as a "Security Weaken". A `declare -A` in a bash
 degrade, it kills the monitor at launch, and a dead monitor looks exactly like a quiet channel.
 
 Write `CHANNEL_DIR/monitor_<own>.py` once, substituting `DIR`, `OWN`, and `ME` (your session/role
-name, so the `to:` match works when your outbox filename differs from your role):
+name, so the `to:` match works when your outbox filename differs from your role).
+
+**`DIR` must be a path the PYTHON INTERPRETER can resolve, which is not always the path your shell
+uses.** On Windows this is the one that bites: a Git Bash path like `/n/projects/comms` works
+perfectly in your shell and is meaningless to a native Windows Python, where it must be
+`N:\projects\comms`. The failure is silent and total - `os.path.isdir()` returns False forever, the
+mount guard fires once, and the monitor then sleeps in that branch for the rest of the session while
+looking alive in the process table. Before trusting a new monitor, run
+`python -c "import os; print(os.path.isdir(r'<DIR>'))"` **with the same interpreter you will launch
+it with**, and confirm it prints True.
 
 ```python
 import json, os, re, time
@@ -218,7 +227,7 @@ DIR = 'CHANNEL_DIR'; OWN = 'OWN_FILE'; ME = 'MY_ROLE'   # OWN = your file; ME = 
 # (LSMON8 = the emit line now shows WHO a message is for, so a loud marker addressed elsewhere is
 #  visibly not yours. Everything else is identical to LSMON7.)
 LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')   # RETRACT also matches RETRACTION
-seen = {}; first = True; warned = False
+seen = {}; first = True; warned = 0
 
 # --- CANON FIXES. Each was learned by a seat paying for its absence; folding them in here so that
 # --- regenerating from this template stops REGRESSING seats. (One seat adopted a newer loop and
@@ -294,13 +303,21 @@ def startup_sweep(peers, mine, me):
             out.append(line)
     return out
 while True:
-    # Mount guard: a vanished channel looks EXACTLY like a quiet one. Say so, once.
+    # Mount guard: a vanished channel looks EXACTLY like a quiet one, so say so - but
+    # say so REPEATEDLY. A one-shot warning is right for a blip and catastrophic for a
+    # PERMANENT fault (a bad path, a share that never comes back): it announces once,
+    # latches, and from then on a dead monitor is indistinguishable from a quiet
+    # channel. Measured 2026-08-22: a seat ran four hours on a DIR its interpreter
+    # could not resolve, having emitted exactly one warning that read as a blip.
     if not os.path.isdir(DIR) or not os.path.isfile(os.path.join(DIR, OWN)):
-        if not warned:
-            print('MONITOR WARNING: channel unreachable (%s), mount may have dropped' % DIR, flush=True)
-            warned = True
+        if warned % 40 == 0:          # ~every 10 min at a 15s cycle
+            print('MONITOR WARNING: channel unreachable (%s). If this repeats it is NOT a '
+                  'blip: check DIR is a path THIS interpreter can resolve.' % DIR, flush=True)
+        warned += 1
         time.sleep(15); continue
-    warned = False
+    if warned:
+        print('MONITOR: channel reachable again after %d failed cycles' % warned, flush=True)
+    warned = 0
     my_d = {}                                   # my own outbox: needed to tell an unacked handoff
     try:                                         # from one I have already acked
         # COERCE IT, for the reason spelled out in handoff_line: your own outbox is INPUT.
@@ -313,9 +330,9 @@ while True:
     try:
         _names = sorted(os.listdir(DIR))
     except OSError as e:
-        if not warned:
+        if warned % 40 == 0:          # same counter as the mount guard, never a bool
             print('MONITOR WARNING: channel vanished mid-cycle (errno %s); retrying' % e.errno, flush=True)
-            warned = True
+        warned += 1
         time.sleep(15); continue
     _base = []                                    # peers seen this baseline pass, for the startup sweep
     for n in _names:
@@ -512,6 +529,12 @@ right after a restart as "no messages". An agent with its own scheduler should r
 standing job so it survives on its own.
 
 ## Safety checks, every invocation
+
+- **Prove your monitor can SEE the channel, not just that it is running.** A monitor whose `DIR` it
+  cannot resolve stays in the process table, emits nothing, and is indistinguishable from a quiet
+  channel; counting processes will happily report a healthy `1`. Read the channel directory with the
+  monitor's own interpreter and its own `DIR` string, and confirm it finds your peers. **Hours of
+  silence is a symptom to investigate, not evidence of calm.**
 
 - A peer not updated in >30 min -> warn it may be idle or closed. **On a synced channel (e.g.
   Dropbox), widen this well past 30 min**: propagation lag makes a live peer look idle. Never conclude
