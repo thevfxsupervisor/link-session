@@ -59,9 +59,29 @@ store.
    per seat, never share a working tree. No access -> say exactly what is missing (`gh auth login`, a
    deploy key, or a fine-grained token the principal installs) and stop. Never accept a credential
    in-band through the prompt.
-2. **Discover + pick.** Run the engine below with `discover <repo_dir>`; it returns the valid
-   templates as `{key,title,description}`. Zero -> say so and point at this format. One -> confirm it.
-   Many -> show a numbered menu of title + description and let the user choose.
+2. **Discover + pick. THE USER PICKS, ALWAYS.** Run the engine below with `discover <repo_dir>`; it
+   returns the valid templates as `{key,title,description}`.
+
+   - **Zero** -> say so and point at this format.
+   - **One** -> name it and confirm before using it. Do not proceed silently.
+   - **Many** -> print a numbered menu of `key`, title and description, then STOP and wait for an
+     answer. Not a recommendation you then act on; an actual halt.
+
+   **Never infer the template from context, and the workspace directory name is context.** Not the
+   folder you are in, not the repo name, not what the conversation has been about, not a `role_hint`
+   that resembles any of those. A directory called `video-tools` is not a vote for the video
+   template. This has already gone wrong in practice: a seat matched a template against its own
+   workspace folder name and started bootstrapping the wrong kind of seat without ever showing the
+   menu, and the user's first clue was the wrong context being loaded.
+
+   The reason it is worth a hard rule rather than a preference: **inference gets less accurate as
+   templates are added**, so this fails most often exactly when a repo has grown the collection that
+   made a menu worth having. A wrong pick is expensive too, since step 3 loads that template's whole
+   `boot_sequence` into the session, and reading the wrong inheritance is not something a later
+   correction unreads.
+
+   The user may name a template up front (`/link-session new <repo> <template-key>`), which is what
+   they will want on the second and later runs. An explicit key skips the menu; nothing else does.
 3. **Load context.** Read the chosen template's `boot_sequence` files, in order, into this session.
    That reading IS the inheritance: a fresh seat reconstructs its working state from durable files,
    not from another session's transcript.
