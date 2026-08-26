@@ -469,6 +469,15 @@ phantom. Count interpreter processes:
 Substitute your interpreter. On macOS `pgrep -fc` prints nothing rather than erroring, so use
 `ps ax | grep`. Check `ps -o pid,ppid` before killing anything.
 
+**Watch for a launcher shim, which double-counts one monitor.** Some virtualenv tools put a small
+`python` wrapper in the venv that EXECS the real interpreter as a CHILD. Both processes carry the
+script path, so both match and one healthy monitor reads as 2. The general fix is to discount any
+matching process whose parent also matches; a genuine duplicate still counts correctly, because two
+independent launches do not have each other as parents. On Windows, where the shell `ps` cannot see
+a harness-launched interpreter at all, count from the process table instead:
+
+    powershell -NoProfile -Command "$p = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*monitor_<own>*' }); $ids = $p.ProcessId; @($p | Where-Object { $ids -notcontains $_.ParentProcessId }).Count"
+
 ## Rules that keep it safe
 
 **One writer per file.** Two processes on one outbox overwrite each other, and every flip is a change,
