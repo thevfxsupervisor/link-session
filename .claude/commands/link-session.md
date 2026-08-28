@@ -765,8 +765,30 @@ def validate(path):
         v = fm.get(req)
         if not (isinstance(v, str) and v.strip()):
             errs.append("missing or empty required frontmatter field: `%s`" % req)
-    if _claude_md(body) is None:
+    starter = _claude_md(body)
+    if starter is None:
         errs.append("no ```markdown fenced block found: a bootstrap must carry a starter CLAUDE.md")
+    else:
+        # _claude_md stops at the FIRST ``` after the opening fence, so a triple
+        # backtick ANYWHERE inside the block, including inline in prose, silently
+        # truncates the starter CLAUDE.md. Everything else here still passes, so
+        # without this the author gets a green check and a half-written seat file.
+        # Seen for real: a template lost 22% of its starter to a ``` written inside
+        # a sentence explaining this very trap.
+        opener = body.find("```markdown")
+        if opener != -1:
+            rest = body[opener + len("```markdown"):]
+            last = rest.rfind("\n```")
+            if last != -1:
+                whole = rest[:last].lstrip("\n")
+                if len(whole) > len(starter) + 4:
+                    lost = len(whole) - len(starter)
+                    line = body[:opener + len(starter)].count("\n") + 1
+                    errs.append(
+                        "starter CLAUDE.md is TRUNCATED: %d of %d characters are dropped, "
+                        "because a ``` appears inside the block near line %d. A triple backtick "
+                        "anywhere in the starter ends it, inline ones included. Use four-space "
+                        "indented code instead." % (lost, len(whole), line))
     for i, m in enumerate(fm.get("boot_sequence") or []):
         if not isinstance(m, str):
             errs.append("boot_sequence[%d] must be a string path" % i)
