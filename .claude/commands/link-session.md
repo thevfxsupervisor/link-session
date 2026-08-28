@@ -371,7 +371,9 @@ while True:
             if hl: print(hl, flush=True)
             m = _text(d.get('message'))   # NOT .strip(): a list-shaped message raises,
             # which is the same bug as a list-shaped to:, one field over
-            st = (d.get('status') or '')
+            st = _text(d.get('status'))   # _text here too, not just on message: a list-shaped
+        # status otherwise raises and the guard SKIPS that peer, so a loud marker sitting
+        # in it would be dropped. Coercing reads the peer instead of losing it.
             loud = any(k in (st + ' ' + m).upper() for k in LOUD)
             # STATUS IS PULL. A change with no message and no loud marker is PROGRESS, not a
             # request: it is recorded above but wakes NOBODY. This is what makes the channel
