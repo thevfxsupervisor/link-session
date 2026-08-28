@@ -257,6 +257,14 @@ def suppress(fn, d):
 #    still-unacked handoff visible instead of firing once and vanishing. An OUTBOX is untrusted input,
 #    yours included: `to` may be a real list, and data/handoff/ack may be malformed. Coerce on TYPE,
 #    never on truthiness ("handoff": "text" is truthy and .get() would raise and crash the monitor).
+def _text(v):
+    """Any shape -> a stripped string. A field the contract calls a string can arrive
+    as a list, a dict or None; .strip() on those raises and kills the monitor."""
+    if v is None: return ""
+    if isinstance(v, (list, tuple, set)): return " ".join(str(x) for x in v).strip()
+    return str(v).strip()
+
+
 def _recips(v):
     if isinstance(v, (list, tuple)):
         return [str(t).strip() for t in v if str(t).strip()]
@@ -339,47 +347,60 @@ while True:
         if not n.endswith('.json') or n == OWN: continue
         try: d = json.load(open(os.path.join(DIR, n)))
         except Exception: continue
+        # ONE BAD PAYLOAD MUST SKIP THAT PEER, NEVER KILL THE LOOP. Any seat can write
+        # any shape into any field at any time, and no seat should be able to blind
+        # another by doing so. A monitor that exits looks exactly like a quiet channel,
+        # so this failure is silent and open-ended: found 2026-08-28 after a seat went
+        # deaf for hours on a list-shaped `to:`.
+        try:
         # Peer-hood is decided by SHAPE, not extension. Tools drop caches and working files
         # into shared folders; anything treating every .json as a peer eventually adopts a
         # state cache as a colleague, and caches change on every write.
-        if not isinstance(d, dict) or 'session' not in d or 'status' not in d: continue
-        sig = _norm(json.dumps([d.get('status'), d.get('message'), d.get('data')], sort_keys=True))
-        if seen.get(n) == sig: continue
-        seen[n] = sig                             # record EVERY change, so nothing re-fires
-        if first: _base.append(d); continue       # baseline: record silently; sweep handoffs after the loop
-        # A handoff/ack PUSHES (a request is not progress), and runs BEFORE suppress so a suppress()
-        # that filters on to: - or an outbox-level to: - cannot hide a handoff addressed to you.
-        # Wrapped: a malformed peer outbox must never raise here, or one seat's typo deafens yours.
-        try: hl = handoff_line(d, my_d, ME)
-        except Exception: hl = None
-        if hl: print(hl, flush=True)
-        m = (d.get('message') or '').strip()
-        st = (d.get('status') or '')
-        loud = any(k in (st + ' ' + m).upper() for k in LOUD)
-        # STATUS IS PULL. A change with no message and no loud marker is PROGRESS, not a
-        # request: it is recorded above but wakes NOBODY. This is what makes the channel
-        # targeted - a peer grinding on unrelated work no longer costs you a turn.
-        if suppress(n, d): continue      # WIRE IT. An unwired guard passes its own unit tests.
-        if not m and not loud:
-            continue
-        # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
-        # or blank = broadcast); a loud marker always delivers. to: may be a name or a list.
-        to = d.get('to') or ''
-        # Parse comma OR space separated recipients: "a, b" and "a b" and ["a","b"] all become
-        # ["a","b"], so MEMBERSHIP works. Wrapping "a, b" as one element (the old bug) compared
-        # ME to the whole string and silently DROPPED every multi-recipient message.
-        recips = ([str(x).strip() for x in to] if isinstance(to, list)
-                  else str(to).replace(',', ' ').split())
-        if recips and ME not in recips and not loud:
-            continue
-        tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
-        stag = '  [stopped]' if d.get('stop') else ''
-        # SHOW WHO IT IS FOR. A loud marker bypasses the to: filter by design, so without this a
-        # CORRECTION addressed to another seat reads exactly like one addressed to you, and you
-        # spend a turn on someone else's business. Blank to: (a broadcast) needs no tag.
-        rtag = '' if not recips else ('  [-> %s]' % ', '.join(recips) if ME not in recips
-                                      else '  [-> you]')
-        print('%s: %s%s%s%s' % (d.get('session'), st[:120], stag, rtag, tag), flush=True)
+            if not isinstance(d, dict) or 'session' not in d or 'status' not in d: continue
+            sig = _norm(json.dumps([d.get('status'), d.get('message'), d.get('data')],
+                                  sort_keys=True, default=str))   # default=str: an odd
+            # type in data must not raise here, see the guard below
+            if seen.get(n) == sig: continue
+            seen[n] = sig                             # record EVERY change, so nothing re-fires
+            if first: _base.append(d); continue       # baseline: record silently; sweep handoffs after the loop
+            # A handoff/ack PUSHES (a request is not progress), and runs BEFORE suppress so a suppress()
+            # that filters on to: - or an outbox-level to: - cannot hide a handoff addressed to you.
+            # Wrapped: a malformed peer outbox must never raise here, or one seat's typo deafens yours.
+            try: hl = handoff_line(d, my_d, ME)
+            except Exception: hl = None
+            if hl: print(hl, flush=True)
+            m = _text(d.get('message'))   # NOT .strip(): a list-shaped message raises,
+            # which is the same bug as a list-shaped to:, one field over
+            st = (d.get('status') or '')
+            loud = any(k in (st + ' ' + m).upper() for k in LOUD)
+            # STATUS IS PULL. A change with no message and no loud marker is PROGRESS, not a
+            # request: it is recorded above but wakes NOBODY. This is what makes the channel
+            # targeted - a peer grinding on unrelated work no longer costs you a turn.
+            if suppress(n, d): continue      # WIRE IT. An unwired guard passes its own unit tests.
+            if not m and not loud:
+                continue
+            # A message or loud marker is a PUSH. Deliver only if it is FOR you (to: names you,
+            # or blank = broadcast); a loud marker always delivers. to: may be a name or a list.
+            to = d.get('to') or ''
+            # Parse comma OR space separated recipients: "a, b" and "a b" and ["a","b"] all become
+            # ["a","b"], so MEMBERSHIP works. Wrapping "a, b" as one element (the old bug) compared
+            # ME to the whole string and silently DROPPED every multi-recipient message.
+            recips = ([str(x).strip() for x in to] if isinstance(to, list)
+                      else str(to).replace(',', ' ').split())
+            if recips and ME not in recips and not loud:
+                continue
+            tag = '  [msg %dc - read the file if relevant]' % len(m) if m else ''
+            stag = '  [stopped]' if d.get('stop') else ''
+            # SHOW WHO IT IS FOR. A loud marker bypasses the to: filter by design, so without this a
+            # CORRECTION addressed to another seat reads exactly like one addressed to you, and you
+            # spend a turn on someone else's business. Blank to: (a broadcast) needs no tag.
+            rtag = '' if not recips else ('  [-> %s]' % ', '.join(recips) if ME not in recips
+                                          else '  [-> you]')
+            print('%s: %s%s%s%s' % (d.get('session'), st[:120], stag, rtag, tag), flush=True)
+        except Exception as _e:                 # report once per peer, then stay quiet
+            if seen.get(n) != 'ERR':
+                print('MONITOR: skipping malformed outbox %s (%s)' % (n, _e), flush=True)
+                seen[n] = 'ERR'
     if first:                                     # one-shot: re-surface a handoff already pending at
         for _hl in startup_sweep(_base, my_d, ME):  # startup, which baseline-never-replay would hide
             print(_hl, flush=True)
