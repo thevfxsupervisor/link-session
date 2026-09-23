@@ -301,13 +301,63 @@ def handoff_line(peer, mine, me):
                      % (peer.get("session"), str(ak.get("verdict") or "?"), extra))
     return "\n".join(lines) if lines else None
 _SWEEP_LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')
+_SWEEP_SEEN_MAX = 200
+
+_SWEEP_SEEN_MAX = 200
+
 def _sweep_text(v):
-    # Same coercion as _text. Named separately so dev/handoff.py stays
-    # dependency-free and the drift guard can embed startup_sweep verbatim.
-    if v is None: return ""
-    if isinstance(v, (list, tuple, set)): return " ".join(str(x) for x in v).strip()
+    """Any shape -> a stripped string, for the same reason `_text` exists in the monitor."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple, set)):
+        return " ".join(str(x) for x in v).strip()
     return str(v).strip()
-def startup_sweep(peers, mine, me):
+
+def _sweep_seen(path):
+    """Hashes of pending messages this seat has already surfaced. FAILS OPEN.
+
+    **Why this exists, and it is a defect I shipped and then watched.** Surfacing pending
+    messages at baseline (2026-09-23) fixed a silent drop and created a permanent nag: a
+    message the sender never clears re-fires on EVERY monitor restart, and a monitor is
+    restarted every thirty minutes by the harness. Measured within the hour: a `CORRECTION`
+    from a seat that had not written for twelve hours, on another box, whose session may
+    well be closed, so nothing will ever clear it. A handoff cannot do this because the
+    receiver acks in its own outbox; a plain message has no ack, so the suppression has to
+    be local.
+
+    Per-seat local state, not channel content: dot-prefixed, and it carries no `session` or
+    `status` key so the monitor's peer-shape filter ignores it.
+
+    **Every failure path returns "nothing seen", which means emit.** A repeated line costs a
+    glance; a swallowed one is the bug this whole sweep exists to prevent, so the degraded
+    behaviour must be the noisy one."""
+    if not path:
+        return set()
+    try:
+        import json as _j
+        with open(path) as fh:
+            v = _j.load(fh)
+        return set(v) if isinstance(v, list) else set()
+    except Exception:
+        return set()
+
+def _sweep_remember(path, hashes):
+    """Record what was surfaced. Best effort: failing to write must never lose a line."""
+    if not path or not hashes:
+        return
+    try:
+        import json as _j
+        keep = list(_sweep_seen(path)) + list(hashes)
+        with open(path, "w") as fh:
+            _j.dump(keep[-_SWEEP_SEEN_MAX:], fh)
+    except Exception:
+        pass
+
+def _sweep_key(sess, msg):
+    import hashlib as _h
+    return _h.md5(("%s\x00%s" % (sess, msg)).encode("utf-8")).hexdigest()[:16]
+
+def startup_sweep(peers, mine, me, seen_path=None):
     """One-shot on the monitor's baseline pass: pending HANDOFFS **and pending MESSAGES**.
 
     Baseline-never-replay is right for STATUS, which is progress you can read on demand. It
@@ -335,6 +385,8 @@ def startup_sweep(peers, mine, me):
             line = None
         if line:
             out.append(line)
+    already = _sweep_seen(seen_path)
+    fresh = []
     for p in peers:
         try:
             msg = _sweep_text(_dict(p).get("message"))
@@ -345,11 +397,20 @@ def startup_sweep(peers, mine, me):
             recips = _recips(_dict(p).get("to"))
             if recips and me not in recips and not loud:
                 continue
+            sess = _dict(p).get("session")
+            # ONCE PER SEAT, NOT ONCE PER RESTART. Keyed on (sender, message) so an EDITED
+            # message is a new one and surfaces again, which is what an edit means.
+            key = _sweep_key(sess, msg)
+            if key in already:
+                continue
+            fresh.append(key)
             out.append("PENDING AT STARTUP from %s%s: %s"
-                       % (_dict(p).get("session"), "  [LOUD]" if loud else "", msg[:200]))
+                       % (sess, "  [LOUD]" if loud else "", msg[:200]))
         except Exception:
             continue
+    _sweep_remember(seen_path, fresh)
     return out
+
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one, so say so - but
     # say so REPEATEDLY. A one-shot warning is right for a blip and catastrophic for a
@@ -444,7 +505,8 @@ while True:
                 print('MONITOR: skipping malformed outbox %s (%s)' % (n, _e), flush=True)
                 seen[n] = 'ERR'
     if first:                                     # one-shot: re-surface a handoff already pending at
-        for _hl in startup_sweep(_base, my_d, ME):  # startup, which baseline-never-replay would hide
+        for _hl in startup_sweep(_base, my_d, ME,
+                                 os.path.join(DIR, '.sweep-seen-%s.json' % ME)):  # startup, which baseline-never-replay would hide
             print(_hl, flush=True)
     first = False
     time.sleep(15)

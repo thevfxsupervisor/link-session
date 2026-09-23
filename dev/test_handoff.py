@@ -20,6 +20,11 @@ def ob(session, **data):
     return {"session": session, "status": "", "data": data}
 
 
+def skill_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                        ".claude", "commands", "link-session.md")
+
+
 def main():
     ME = "mint"
 
@@ -167,6 +172,74 @@ def main():
     check("sweepmsg.handoff-and-message-both",
           any("HANDOFF" in x for x in both) and any("PENDING AT STARTUP" in x for x in both),
           both)
+
+    # --- once per SEAT, not once per RESTART (added 2026-09-23, same day as the sweep) ---
+    # Surfacing pending messages fixed a silent drop and created a permanent nag: the
+    # harness restarts a monitor every thirty minutes, and a message the sender never
+    # clears re-fired every time. A handoff cannot do this because the receiver acks in its
+    # own outbox; a plain message has no ack, so the suppression has to be local.
+    import tempfile as _tf
+    _seen = os.path.join(_tf.mkdtemp(), "seen.json")
+    _pending = [msg("peerA", "read this", to=ME),
+                msg("peerB", "see the md", to="other", status="CORRECTION: wrong")]
+    check("seen.first-start-surfaces",
+          len(H.startup_sweep(_pending, mine_none, ME, _seen)) == 2)
+    check("seen.RESTART-is-silent",
+          H.startup_sweep(_pending, mine_none, ME, _seen) == [])
+    _pending[0] = msg("peerA", "read this INSTEAD", to=ME)
+    check("seen.an-EDIT-surfaces-again",
+          any("peerA" in x for x in H.startup_sweep(_pending, mine_none, ME, _seen)))
+    # FAIL OPEN, both ways. A repeated line costs a glance; a swallowed one is the bug the
+    # sweep exists to prevent, so every degraded path must be the NOISY one.
+    check("seen.no-path-fails-open",
+          len(H.startup_sweep(_pending, mine_none, ME, None)) == 2)
+    check("seen.unwritable-path-fails-open",
+          len(H.startup_sweep(_pending, mine_none, ME, "/proc/nope/x.json")) == 2)
+    check("seen.corrupt-file-fails-open-and-does-not-raise",
+          (open(_seen, "w").write("not json") or True) and
+          len(H.startup_sweep(_pending, mine_none, ME, _seen)) == 2)
+
+    # --- the SHIPPED TEMPLATE must have no undefined names ---
+    # This caught a real one within the hour: rebuilding the template dropped `_sweep_text`,
+    # so startup_sweep raised NameError inside its own try/except and silently emitted
+    # NOTHING. Syntax was fine, drift was clean, and the behaviour was worse than the bug
+    # being fixed. A template is executed, so check it by execution, not by reading.
+    if os.path.exists(skill_path()):
+        import ast as _ast, builtins as _bi, re as _re2
+        _md = open(skill_path(), encoding="utf-8").read()
+        _tpl = [b for b in _re2.findall(r"```python\n(.*?)```", _md, _re2.S)
+                if "while True:" in b]
+        check("tpl.found", len(_tpl) == 1, str(len(_tpl)))
+        if _tpl:
+            _tree = _ast.parse(_tpl[0])
+            _def = set(dir(_bi))
+            for n in _ast.walk(_tree):
+                if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                    _def.add(n.name)
+                elif isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Store):
+                    _def.add(n.id)
+                elif isinstance(n, (_ast.Import, _ast.ImportFrom)):
+                    for al in n.names:
+                        _def.add((al.asname or al.name).split(".")[0])
+                elif isinstance(n, _ast.ExceptHandler) and n.name:
+                    _def.add(n.name)
+                if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.Lambda)):
+                    _ar = n.args
+                    for _a in list(_ar.args) + list(_ar.posonlyargs) + list(_ar.kwonlyargs):
+                        _def.add(_a.arg)
+                    if _ar.vararg: _def.add(_ar.vararg.arg)
+                    if _ar.kwarg: _def.add(_ar.kwarg.arg)
+            _missing = sorted({n.id for n in _ast.walk(_tree) if isinstance(n, _ast.Name)
+                               and isinstance(n.ctx, _ast.Load)} - _def)
+            check("tpl.no-undefined-names", not _missing, ", ".join(_missing))
+            _ns = {}
+            try:
+                exec(_tpl[0].split("while True:")[0], _ns)
+                _out = _ns["startup_sweep"]([msg("peerX", "hi", to=ME)], mine_none, ME, None)
+                check("tpl.startup_sweep-RUNS-and-emits",
+                      any("peerX" in x for x in _out), str(_out)[:120])
+            except Exception as _e:
+                check("tpl.startup_sweep-RUNS-and-emits", False, "raised %r" % _e)
 
     # --- drift guard: the exact source is embedded in the shipped skill ---
     skill = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".claude", "commands", "link-session.md")
