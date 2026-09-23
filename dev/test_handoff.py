@@ -132,6 +132,42 @@ def main():
     except Exception as e:
         check("sweep.malformed-peer-nonfatal", False, "raised %r" % e)
 
+    # --- pending MESSAGES surface at startup too (added 2026-09-23) ---
+    # Baseline-never-replay was swallowing a message a peer sent while the seat was down,
+    # which is exactly the window a restart creates. Measured on a live channel: two, one of
+    # them a LOUD CORRECTION, on two different channels, found by hand.
+    def msg(sess, text, to="", status="working"):
+        return {"session": sess, "status": status, "message": text, "to": to}
+
+    sweep_msgs = H.startup_sweep(
+        [msg("peerA", "read this file", to=ME),
+         msg("peerB", "see the md", to="someone-else", status="CORRECTION: I was wrong"),
+         msg("peerC", ""),
+         msg("peerD", "not for you", to="other"),
+         msg("peerE", "broadcast to all")],
+        mine_none, ME)
+    check("sweepmsg.for-me", any("peerA" in x for x in sweep_msgs))
+    check("sweepmsg.loud-elsewhere-still-fires",
+          any("peerB" in x and "LOUD" in x for x in sweep_msgs))
+    check("sweepmsg.empty-message-silent", not any("peerC" in x for x in sweep_msgs))
+    check("sweepmsg.addressed-elsewhere-silent", not any("peerD" in x for x in sweep_msgs))
+    check("sweepmsg.broadcast-fires", any("peerE" in x for x in sweep_msgs))
+    # the filter must mirror the LIVE push rule, so nothing surfaces here that would not
+    # have surfaced live. A status change alone is progress and stays silent.
+    check("sweepmsg.status-only-silent",
+          H.startup_sweep([{"session": "p", "status": "busy", "message": "", "to": ""}],
+                          mine_none, ME) == [])
+    # a malformed peer must not swallow a real pending message
+    check("sweepmsg.malformed-peer-nonfatal",
+          any("peerA" in x for x in H.startup_sweep(
+              [{"session": "bad", "message": ["a", "list"], "status": None, "to": 7},
+               msg("peerA", "read this file", to=ME)], mine_none, ME)))
+    # a message and a handoff in one sweep: both surface, handoffs first.
+    both = H.startup_sweep([offer, msg("peerA", "read this file", to=ME)], mine_none, ME)
+    check("sweepmsg.handoff-and-message-both",
+          any("HANDOFF" in x for x in both) and any("PENDING AT STARTUP" in x for x in both),
+          both)
+
     # --- drift guard: the exact source is embedded in the shipped skill ---
     skill = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".claude", "commands", "link-session.md")
     if os.path.exists(skill):

@@ -160,6 +160,11 @@ every `/link-session` invocation sweep for handoffs still needing attention, off
 unacked, or your own offer its target has not acked:
 
 ```python
+_SWEEP_LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')
+def _sweep_text(v):
+    if v is None: return ""
+    if isinstance(v, (list, tuple, set)): return " ".join(str(x) for x in v).strip()
+    return str(v).strip()
 def _recips(v):
     if isinstance(v, (list, tuple)):
         return [str(t).strip() for t in v if str(t).strip()]
@@ -295,12 +300,33 @@ def handoff_line(peer, mine, me):
         lines.append("%s ACKed your handoff [%s]: %s"
                      % (peer.get("session"), str(ak.get("verdict") or "?"), extra))
     return "\n".join(lines) if lines else None
+_SWEEP_LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')
+def _sweep_text(v):
+    # Same coercion as _text. Named separately so dev/handoff.py stays
+    # dependency-free and the drift guard can embed startup_sweep verbatim.
+    if v is None: return ""
+    if isinstance(v, (list, tuple, set)): return " ".join(str(x) for x in v).strip()
+    return str(v).strip()
 def startup_sweep(peers, mine, me):
-    """One-shot on the monitor's baseline pass. Baseline-never-replay is right for status
-    and messages, but WRONG for a pending handoff: an offer already sitting in a peer's outbox
-    when the monitor starts would be recorded silently and never surface, so a restart would
-    hide exactly the work the feature exists to expose. This re-surfaces outstanding handoffs
-    at startup so the safety net does not depend on someone remembering to re-invoke."""
+    """One-shot on the monitor's baseline pass: pending HANDOFFS **and pending MESSAGES**.
+
+    Baseline-never-replay is right for STATUS, which is progress you can read on demand. It
+    is wrong for a handoff, and it is equally wrong for a MESSAGE addressed to you, which
+    this function did not cover until 2026-09-23.
+
+    **Measured, on a live channel.** `straylight-build` wrote a message at 09:08:30 pointing
+    at a file it wanted read. `lx03-straylight`'s monitor started about ninety seconds later,
+    recorded that outbox as baseline, and never emitted it. The seat found it by hand only
+    because it was deciding whether to stop watching a channel it believed was silent, and a
+    second one was hiding the same way on the fleet channel: a `CORRECTION` from
+    `ws14-projects`, a LOUD marker, swallowed by the same baseline.
+
+    **The window is exactly the case a restart creates**, which is the case link-session tells
+    you to expect: re-invoke after a compaction or restart. So the message most likely to be
+    lost is the one a peer sent while you were down, which is the one that mattered.
+
+    The filter mirrors the monitor's push rule, so nothing surfaces here that would not have
+    surfaced live: a message FOR me, a broadcast, or a loud marker."""
     out = []
     for p in peers:
         try:
@@ -309,6 +335,20 @@ def startup_sweep(peers, mine, me):
             line = None
         if line:
             out.append(line)
+    for p in peers:
+        try:
+            msg = _sweep_text(_dict(p).get("message"))
+            if not msg:
+                continue
+            blob = (_sweep_text(_dict(p).get("status")) + " " + msg).upper()
+            loud = any(k in blob for k in _SWEEP_LOUD)
+            recips = _recips(_dict(p).get("to"))
+            if recips and me not in recips and not loud:
+                continue
+            out.append("PENDING AT STARTUP from %s%s: %s"
+                       % (_dict(p).get("session"), "  [LOUD]" if loud else "", msg[:200]))
+        except Exception:
+            continue
     return out
 while True:
     # Mount guard: a vanished channel looks EXACTLY like a quiet one, so say so - but
@@ -420,8 +460,14 @@ to 300s when idle, snapping back on change) is tidiness, not saving: only emitte
 
 ### Four rules the loop above encodes
 
-1. **Baseline on first sight, never replay.** Record every peer's state without emitting it, or every
-   monitor start dumps the channel's whole history into the session that just began.
+1. **Baseline on first sight, never replay, EXCEPT for what was already waiting FOR YOU.**
+   Record every peer's state without emitting it, or every monitor start dumps the channel's
+   whole history into the session that just began. **But a handoff or a MESSAGE addressed to
+   you, sitting in a peer's outbox at baseline, must still surface once** (`startup_sweep`).
+   Measured 2026-09-23: two messages, one of them a LOUD `CORRECTION`, were silently
+   swallowed on two channels by a baseline that treated them as history. The window is
+   exactly the one a restart creates, so the message most likely to be lost is the one a peer
+   sent while you were down.
 2. **Fire on CONTENT, not mtime.** An identical re-save must wake nobody.
 3. **Identify peers by shape.** A real outbox has `session` and `status`. Everything else in the
    folder is somebody's working file.

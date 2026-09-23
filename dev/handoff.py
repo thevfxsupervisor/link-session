@@ -27,6 +27,18 @@ monitor and deafen the seat. Coerce on TYPE, never on truthiness.
 """
 
 
+_SWEEP_LOUD = ('CORRECTION', 'RETRACT', 'SECURITY', 'HAZARD')
+
+
+def _sweep_text(v):
+    """Any shape -> a stripped string, for the same reason `_text` exists in the monitor."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple, set)):
+        return " ".join(str(x) for x in v).strip()
+    return str(v).strip()
+
+
 def _recips(v):
     if isinstance(v, (list, tuple)):
         return [str(t).strip() for t in v if str(t).strip()]
@@ -84,11 +96,25 @@ def unacked(peers, mine, me):
 
 
 def startup_sweep(peers, mine, me):
-    """One-shot on the monitor's baseline pass. Baseline-never-replay is right for status
-    and messages, but WRONG for a pending handoff: an offer already sitting in a peer's outbox
-    when the monitor starts would be recorded silently and never surface, so a restart would
-    hide exactly the work the feature exists to expose. This re-surfaces outstanding handoffs
-    at startup so the safety net does not depend on someone remembering to re-invoke."""
+    """One-shot on the monitor's baseline pass: pending HANDOFFS **and pending MESSAGES**.
+
+    Baseline-never-replay is right for STATUS, which is progress you can read on demand. It
+    is wrong for a handoff, and it is equally wrong for a MESSAGE addressed to you, which
+    this function did not cover until 2026-09-23.
+
+    **Measured, on a live channel.** `straylight-build` wrote a message at 09:08:30 pointing
+    at a file it wanted read. `lx03-straylight`'s monitor started about ninety seconds later,
+    recorded that outbox as baseline, and never emitted it. The seat found it by hand only
+    because it was deciding whether to stop watching a channel it believed was silent, and a
+    second one was hiding the same way on the fleet channel: a `CORRECTION` from
+    `ws14-projects`, a LOUD marker, swallowed by the same baseline.
+
+    **The window is exactly the case a restart creates**, which is the case link-session tells
+    you to expect: re-invoke after a compaction or restart. So the message most likely to be
+    lost is the one a peer sent while you were down, which is the one that mattered.
+
+    The filter mirrors the monitor's push rule, so nothing surfaces here that would not have
+    surfaced live: a message FOR me, a broadcast, or a loud marker."""
     out = []
     for p in peers:
         try:
@@ -97,4 +123,18 @@ def startup_sweep(peers, mine, me):
             line = None
         if line:
             out.append(line)
+    for p in peers:
+        try:
+            msg = _sweep_text(_dict(p).get("message"))
+            if not msg:
+                continue
+            blob = (_sweep_text(_dict(p).get("status")) + " " + msg).upper()
+            loud = any(k in blob for k in _SWEEP_LOUD)
+            recips = _recips(_dict(p).get("to"))
+            if recips and me not in recips and not loud:
+                continue
+            out.append("PENDING AT STARTUP from %s%s: %s"
+                       % (_dict(p).get("session"), "  [LOUD]" if loud else "", msg[:200]))
+        except Exception:
+            continue
     return out
